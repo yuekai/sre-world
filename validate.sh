@@ -19,12 +19,17 @@
 #              (base + per-task fault-layer sections; layer Dockerfile FROM-pin;
 #              tools/check_task_provenance — static, no registry/Docker)
 #   probe      each substrate's leak/exploit invariant battery (manifest checks.leak_probe)
+#   arena      regenerated tasks equal the Incident Arena reference (tools/arena_parity;
+#              fetches the pinned checkout into .cache/ unless ARENA_DIR is set)
 #
-# Full e2e gate (needs harbor CLI + Docker + kind):
+# Cluster gates (need Docker + kind):
+#   kind       the trusted Kind cluster (Calico) enforces the chart's NetworkPolicies
+#              the way bring-ups need: probes, DNS and reply traffic pass, ingress
+#              is restricted (tools/kind_netpol_smoke, ~1 min)
 #   harbor     rebuild each substrate's images, then oracle -> PASS / nop -> FAIL
 #              on its harbor_gate_scenario through `harbor run -e helm`
 #
-#   smoke = lint+contracts+generate+consistency+render+identity+provenance+probe   all = smoke + harbor
+#   smoke = lint+contracts+generate+consistency+render+identity+provenance+probe+arena   all = smoke + kind + harbor
 #
 # Usage:  ./validate.sh [gate] [substrate]   (default gate: smoke; the
 # optional substrate scopes the local developer convenience path)
@@ -57,7 +62,7 @@ target_lint() {
   hr "lint: agent-visible artifacts must not leak design intent"
   local args=()
   [ -z "$SUBSTRATE_FILTER" ] || args=(--substrate "$SUBSTRATE_FILTER")
-  if uv run python -m tools.lint_scenario "${args[@]}"; then ok "answer-key lint clean ($SUBSTRATES)"; else bad "answer-key lint FAILED"; fi
+  if uv run python -m tools.lint_scenario ${args[@]+"${args[@]}"}; then ok "answer-key lint clean ($SUBSTRATES)"; else bad "answer-key lint FAILED"; fi
 }
 
 target_contracts() {
@@ -112,7 +117,7 @@ target_consistency() {
   hr "consistency: authored task files cohere (registry / allow-list / mechanism)"
   local args=()
   [ -z "$SUBSTRATE_FILTER" ] || args=(--substrate "$SUBSTRATE_FILTER")
-  if uv run python -m tools.check_task_consistency "${args[@]}"; then ok "cross-file consistency clean ($SUBSTRATES)"; else bad "cross-file consistency FAILED (a task's answer key is internally inconsistent)"; fi
+  if uv run python -m tools.check_task_consistency ${args[@]+"${args[@]}"}; then ok "cross-file consistency clean ($SUBSTRATES)"; else bad "cross-file consistency FAILED (a task's answer key is internally inconsistent)"; fi
 }
 
 target_render() {
@@ -131,7 +136,7 @@ target_identity() {
   hr "identity: task chart copies are byte-identical to their substrate chart"
   local args=()
   [ -z "$SUBSTRATE_FILTER" ] || args=(--substrate "$SUBSTRATE_FILTER")
-  if uv run python -m tools.check_task_identity "${args[@]}"; then ok "all task chart copies identical (prune rules respected)"; else bad "a task chart copy DIVERGED from its substrate"; fi
+  if uv run python -m tools.check_task_identity ${args[@]+"${args[@]}"}; then ok "all task chart copies identical (prune rules respected)"; else bad "a task chart copy DIVERGED from its substrate"; fi
 }
 
 target_provenance() {
@@ -144,7 +149,7 @@ target_provenance() {
   hr "provenance: task image refs digest-pinned to the committed lock (base+layer)"
   local args=()
   [ -z "$SUBSTRATE_FILTER" ] || args=(--substrate "$SUBSTRATE_FILTER")
-  if uv run python -m tools.check_task_provenance "${args[@]}"; then ok "all task image pins hold"; else bad "a task's image provenance DIVERGED from the lock"; fi
+  if uv run python -m tools.check_task_provenance ${args[@]+"${args[@]}"}; then ok "all task image pins hold"; else bad "a task's image provenance DIVERGED from the lock"; fi
 }
 
 target_probe() {
@@ -185,6 +190,37 @@ harbor_run() { # $1=task_rel $2=agent $3=jobname -> echoes overall=PASS|FAIL
   uv run python -m tools.validate_trial_capture "${JOBS:?}/$3" \
     --agent "$2" --print-overall
 }
+# Incident Arena: the reference output this reconstruction must reproduce
+# (docs/DECISIONS.md D25). Pinned so the gate cannot drift with upstream syncs.
+ARENA_REPO="https://github.com/abundant-ai/incident-arena.git"
+ARENA_COMMIT="fba011e451653c4058c2dc80a97c5d260c036872"
+target_arena() {
+  hr "arena: generated tasks reproduce the Incident Arena reference"
+  local dir="${ARENA_DIR:-$ROOT/.cache/incident-arena}"
+  if [ ! -d "$dir/.git" ]; then
+    git clone -q --filter=blob:none "$ARENA_REPO" "$dir" \
+      || { bad "cannot fetch $ARENA_REPO (offline? set ARENA_DIR to an existing checkout)"; return; }
+  fi
+  if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$ARENA_COMMIT" ]; then
+    git -C "$dir" fetch -q origin "$ARENA_COMMIT" 2>/dev/null
+    git -C "$dir" checkout -q "$ARENA_COMMIT" \
+      || { bad "$dir cannot check out pinned $ARENA_COMMIT"; return; }
+  fi
+  if uv run python -m tools.arena_parity --arena "$dir"; then
+    ok "all Incident Arena tasks reproduced"
+  else
+    bad "arena parity FAILED — rerun with: uv run python -m tools.arena_parity --arena $dir --diff; fix the source, or justify the difference in ALLOWED_DIFFERENCES (tools/arena_parity.py)"
+  fi
+}
+target_kind() {
+  hr "kind: the trusted Kind cluster enforces NetworkPolicy as the chart assumes"
+  docker info >/dev/null 2>&1 || { bad "Docker is not running"; return; }
+  if uv run python -m tools.kind_netpol_smoke; then
+    ok "Kind cluster passes the NetworkPolicy smoke"
+  else
+    bad "Kind NetworkPolicy smoke FAILED — rerun with: uv run python -m tools.kind_netpol_smoke --keep; see docs/plans/2026-10-07-kind-calico.md"
+  fi
+}
 target_harbor() {
   hr "harbor: rebuild images, then oracle → PASS / nop → FAIL via harbor run -e helm"
   # local_run invokes `harbor` from inside `uv run`, which resolves the project
@@ -220,10 +256,12 @@ case "${1:-smoke}" in
   provenance) target_provenance ;;
   probe)     target_probe ;;
   harbor)    target_harbor ;;
+  arena)     target_arena ;;
+  kind)      target_kind ;;
   consistency) target_consistency ;;
-  smoke)     target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe ;;
-  all)       target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe; target_harbor ;;
-  *) echo "usage: $0 [lint|contracts|generate|consistency|render|identity|provenance|probe|harbor|smoke|all] [substrate]"; exit 2 ;;
+  smoke)     target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe; target_arena ;;
+  all)       target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe; target_arena; target_kind; target_harbor ;;
+  *) echo "usage: $0 [lint|contracts|generate|consistency|render|identity|provenance|probe|arena|kind|harbor|smoke|all] [substrate]"; exit 2 ;;
 esac
 
 hr "RESULT"

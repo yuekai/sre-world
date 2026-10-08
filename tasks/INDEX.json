@@ -12,10 +12,10 @@
       "hosted_launcher": "k3s",
       "images": {
         "custom": {
-          "frappeAdmin": "ghcr.io/abundant-ai/sre-world/frappe-admin-sidecar@sha256:ddb3d53596dc1de3041141bb3aead60d589da8376d268e10d74ed7ce2d541354",
-          "loadgen": "ghcr.io/abundant-ai/sre-world/frappe-loadgen@sha256:238752349c990915d93fd1ff7c5905499958f31c2c87a40b3247769cbfce8649",
-          "main": "ghcr.io/abundant-ai/sre-world/frappe-main@sha256:36622c52beabbd89ffdf0db67a8ad71e164a2e71d63d0c9d767a9f866330d9d1",
-          "obsMcp": "ghcr.io/abundant-ai/sre-world/frappe-obs-mcp@sha256:9a35bb0edfd3dfaed92494dea2af0f8f70ce337b1c6906c0a18c516b3edf919b"
+          "frappeAdmin": "ghcr.io/yuekai/sre-world/frappe-admin-sidecar@sha256:9975944f1d375dea6afb9c35159f978c4d82691f232e4818ff7faff66121cd2d",
+          "loadgen": "ghcr.io/yuekai/sre-world/frappe-loadgen@sha256:0372494536eb9a0b40745cdc92a1915ec5b144a67f8bc509845eba5e411b310c",
+          "main": "ghcr.io/yuekai/sre-world/frappe-main@sha256:d40b49eb1c050f14d4fa91ad5bb894ee1db61724466caea903ee0a952574210e",
+          "obsMcp": "ghcr.io/yuekai/sre-world/frappe-obs-mcp@sha256:1646a2a67d5d0e484dc1b760c2900cb756c7986e9a86cead61175b2737883808"
         },
         "local_load": [
           "frappe-main:dev",
@@ -44,7 +44,7 @@
           "oliver006/redis_exporter:v1.62.0"
         ]
       },
-      "release": "v21",
+      "release": "scratch-frappe-rq-recovery-e4b415078419",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -55,10 +55,10 @@
       "hosted_launcher": "k3s",
       "images": {
         "custom": {
-          "loadgen": "ghcr.io/abundant-ai/sre-world/saleor-loadgen@sha256:72cbed9e863d84dafd082218d6e6efb062e96c351d2ad4cd29bd5589be80b50d",
-          "main": "ghcr.io/abundant-ai/sre-world/saleor-main@sha256:a15d460acdb30d58bfe36f04f537fc51ecc10570f9ed43c10c6e3d947e38c55b",
-          "obsMcp": "ghcr.io/abundant-ai/sre-world/saleor-obs-mcp@sha256:2ba69e827fe2cf60a5aa96a57c6e3b98dee9666357046743f9c0afd7fa664d13",
-          "saleorApp": "ghcr.io/abundant-ai/sre-world/saleor-app@sha256:d4d0581c2c2082a0a0f11e58dcf67f739cd8e20e83d953ff24d74e0791fc9f40"
+          "loadgen": "ghcr.io/yuekai/sre-world/saleor-loadgen@sha256:cdee1728463bbaa0c2665a809bb39b5c7919a48a4575fd629b3c4f6a857f812e",
+          "main": "ghcr.io/yuekai/sre-world/saleor-main@sha256:ece6147d06e9f60750b33827302a063cebfa4112e1a37f002dd778b441c09ba5",
+          "obsMcp": "ghcr.io/yuekai/sre-world/saleor-obs-mcp@sha256:5772f8a4e64b6030ff214837cf9376fbfe67e6659fbca6d595da6c2af855f309",
+          "saleorApp": "ghcr.io/yuekai/sre-world/saleor-app@sha256:d4d0581c2c2082a0a0f11e58dcf67f739cd8e20e83d953ff24d74e0791fc9f40"
         },
         "local_load": [
           "saleor-main:dev",
@@ -89,7 +89,7 @@
           "grafana/promtail:3.1.0"
         ]
       },
-      "release": "v6",
+      "release": "rc-saleor-spine-v9-d2cd71f7f59b",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -100,14 +100,14 @@
       "hosted_launcher": "k3s",
       "images": {
         "custom": {
-          "app": "ghcr.io/abundant-ai/sre-world/slack-app@sha256:05f694dc5661a7c9d607a4f58278dc54c332cb531dfe41aa605e555c8c5a4590",
-          "appBuilder": "ghcr.io/abundant-ai/sre-world/slack-app-builder@sha256:50605438d5763a71190789ddd90bd242b5e8c418b29ffae8e833226f63500c65",
-          "go": "ghcr.io/abundant-ai/sre-world/slack-go@sha256:dc884d56479db860496a95d43b95c97ac4c1a14059a6cae68a6676c8a0509119",
-          "loadgen": "ghcr.io/abundant-ai/sre-world/slack-loadgen@sha256:d0183abcfe725d46ba5598f31a84030a72ad2ac1d69cf0a290cc50a917807abc",
-          "main": "ghcr.io/abundant-ai/sre-world/slack-main@sha256:07d10012972537b01a4a63617babc9c6a05323304c60c1c975459e19127e968a",
-          "obsMcp": "ghcr.io/abundant-ai/sre-world/slack-obs-mcp@sha256:5efa76fee6917785cccdaa33b7a460f0db8045ee34109cfc70ffdb0cff405b04",
-          "pgbouncer": "ghcr.io/abundant-ai/sre-world/slack-pgbouncer@sha256:2c2a0ec02a9dddae7eeed0c762af764197492594fa55f8716a42a7d8a6a3c4e2",
-          "py": "ghcr.io/abundant-ai/sre-world/slack-py@sha256:480f3e800cd761bafdd0e27d6d6def15bfde48ef1da4ae3395fa74e0035356b1"
+          "app": "ghcr.io/yuekai/sre-world/slack-app@sha256:e050b1d953721145ee580e1baf1e424c55aa31c37a15c909e296c9607c8f7f4a",
+          "appBuilder": "ghcr.io/yuekai/sre-world/slack-app-builder@sha256:5201d7a4c6e4313c2b9d01209ff6aed413af6f4cc2e11d667631f0ce4920fa07",
+          "go": "ghcr.io/yuekai/sre-world/slack-go@sha256:a9c60cefb4326ff918867ab522e05a9570b5b50fccc6208372228ed341d123dd",
+          "loadgen": "ghcr.io/yuekai/sre-world/slack-loadgen@sha256:5a8bfa7e291a3e9ddc32eca99d291531964f08e3b1e269bd59fc9236a1eebbd2",
+          "main": "ghcr.io/yuekai/sre-world/slack-main@sha256:e3dec9737ddfb496b7c380ff529248bf4216514f0d0127f91e41973c05d940f9",
+          "obsMcp": "ghcr.io/yuekai/sre-world/slack-obs-mcp@sha256:891670f269e57db65d9a2a896472d91a876efb9896f139efd5e503a3b9818ae9",
+          "pgbouncer": "ghcr.io/yuekai/sre-world/slack-pgbouncer@sha256:70dc0e4aefb23ba0646a3410358732ba8358f3b8aa95b8595f2decbba56ceff0",
+          "py": "ghcr.io/yuekai/sre-world/slack-py@sha256:c3a51b1ab5082f337ae5e8c1f2d60467273b1e73440580fc7e1132564b943c12"
         },
         "local_load": [
           "slack-app:dev",
@@ -141,7 +141,7 @@
           "quay.io/prometheuscommunity/postgres-exporter:v0.15.0"
         ]
       },
-      "release": "v14",
+      "release": "rc-slack-spine-v21-e7e7ff029130",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -216,1246 +216,6 @@
       "agent_surface": "confined",
       "calibration": {
         "base_current": false,
-        "base_fingerprint": "sha256:c12de5e9be5332368213222aded05ad0c1639f48914e30ec175f7dbf0bac0cc5",
-        "calibrated_at": "2026-08-21",
-        "calibration_surface_fingerprint": "sha256:708036c7844ba6280a3440e5b4ff67722cff9c3df09e6b182d7d7cb14a8a6806",
-        "current": false,
-        "grader_fingerprint": "sha256:f7c1210f3a891beda31271704233a82fea363fe2ec68b288de72a2f4daeb21d0",
-        "health_current": false,
-        "health_version": "sha256:47f7553517a2594de72cf5d79c0880d2502368c47c0c8a4955a2fe19387102db",
-        "layer_current": false,
-        "layer_fingerprint": "sha256:6dfe874d839a4bc6ea3ec1682460cce1c80a64221faa24e8c1677302e8ba780a",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:921a72d1cde480d3f722eb40ed5042fcaac743a68e79180c4582f7a28ac4bae2",
-        "qualification_surface_fingerprint": "sha256:09be2769c1786e9bd142f33ec7945fab3b694b30788272ee29c2cc0e20b4ab27",
-        "source_sha": "e517cb4f62414bf54fe28ecc186d6ba9d98a3026",
-        "workflow_run_id": "32533401996"
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-F1-connection-cap",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:cd0c3e28d7050c0a0032d009607d2c0c254be3fba8a329fa360871fff86402a6",
-      "name": "sre-world/frappe-03f1-connection-cap",
-      "profile": "frappe_db_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-F1-connection-cap.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-F1-connection-cap",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "mariadb-connection-cap",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": "sha256:c12de5e9be5332368213222aded05ad0c1639f48914e30ec175f7dbf0bac0cc5",
-        "calibrated_at": "2026-08-20",
-        "calibration_surface_fingerprint": "sha256:c575d8a9cb9b588ae615e0d303eadab792a2951882b8bf3d1f0b6cb7aeee0811",
-        "current": false,
-        "grader_fingerprint": "sha256:486ff9f7804dfbf8c21d7de95db737dbc4dec824546a36fe7de0984870a227cb",
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": "sha256:650150b406ef9774e986ec9cc4cc23367f88e75de4c207a198c5afa4a5a9fce1",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:6fa664a3c4e1c9a0afad46ad878fbefcf0415f1f287a0da667a8ac3204bcdca4",
-        "qualification_surface_fingerprint": "sha256:993543adfe8711cd16801c5553e96c494ad831a2d89bf2a39e11372b497c58c0",
-        "source_sha": "5fecf35fa70c402446ac04a4b284e94accc6bcaa",
-        "workflow_run_id": "32389430421"
-      },
-      "causal_distance": 4,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-QE1-rq-eviction-trap",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:dfa1cd52d0e0fed7d390c3bb6b1c6dcf35f532d2dddba62f5aec4b0768cc9bdd",
-      "name": "sre-world/frappe-03qe1-rq-eviction-trap",
-      "profile": "frappe_dev_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-QE1-rq-eviction-trap.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-QE1-rq-eviction-trap",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "rq-eviction-trap",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": "sha256:c12de5e9be5332368213222aded05ad0c1639f48914e30ec175f7dbf0bac0cc5",
-        "calibrated_at": "2026-08-21",
-        "calibration_surface_fingerprint": "sha256:da1d7da6f0b04c8e2a11ede6bfe1a193b1b38fd630ae4a2084b89abb7249cd7c",
-        "current": false,
-        "grader_fingerprint": "sha256:5409b0c94c7910914fe832550237c6abcb1e49128309a6092e3eddaf8acbdb31",
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": "sha256:905f600188dca677fbd82a4d174f47e7bf28350a89c257c2492c0029978c8a00",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:921a72d1cde480d3f722eb40ed5042fcaac743a68e79180c4582f7a28ac4bae2",
-        "qualification_surface_fingerprint": "sha256:af1c4d51ccd03740f2e426ab82e038b9c79460f275f8c0953094fde1b2880741",
-        "source_sha": "58099c201d660b368cc0362fb1804625a73c8453",
-        "workflow_run_id": "32395590680"
-      },
-      "causal_distance": 4,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-U1-user-conn-cap",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:ae081f2d1a7fb23633684a21804bbf4f9f700591e8bf2d698680a8a1ca9e29f5",
-      "name": "sre-world/frappe-03u1-user-conn-cap",
-      "profile": "frappe_db_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-U1-user-conn-cap.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-U1-user-conn-cap",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "mariadb-user-connection-cap",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": true,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-deletes-refused",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:d78b38d405e5399af9378ed51b2b87ee787f0e71f66d1e309806776bc13accad",
-      "name": "sre-world/frappe-03-deletes-refused",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-deletes-refused.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-deletes-refused",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "deletes-refused",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-desk-api-crawls",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:5b74854869f5acb9207a7463fc5e3ae701eaca6bfc06406afc1cf2f60c1dd9ab",
-      "name": "sre-world/frappe-03-desk-api-crawls",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-desk-api-crawls.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-desk-api-crawls",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "mariadb-desk-api-crawls",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3540.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-edits-refused",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:7fbd91315175eee8119d4e762389cac241a0d85f90c61e68eb048255b3ab7ecc",
-      "name": "sre-world/frappe-03-edits-refused",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-edits-refused.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-edits-refused",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "edits-refused",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": "sha256:c12de5e9be5332368213222aded05ad0c1639f48914e30ec175f7dbf0bac0cc5",
-        "calibrated_at": "2026-08-21",
-        "calibration_surface_fingerprint": "sha256:7abd5d9de0db48f3fb2ea7cfba114ebcd0689369a600a9f655ebddfbf7c2e473",
-        "current": false,
-        "grader_fingerprint": "sha256:08bb271dad4c680a053a15604a4d1705fa090093783f1d17352081f60eb34c40",
-        "health_current": false,
-        "health_version": "sha256:47f7553517a2594de72cf5d79c0880d2502368c47c0c8a4955a2fe19387102db",
-        "layer_current": false,
-        "layer_fingerprint": "sha256:497796d0e9293f60979bfd924721fd5ef90c7ab5d7da7e980a628ad8c8c08933",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:921a72d1cde480d3f722eb40ed5042fcaac743a68e79180c4582f7a28ac4bae2",
-        "qualification_surface_fingerprint": "sha256:2d347a0640518a1f78d21c0c16a302591187f48ab1ebd1f553e3b931490b24bd",
-        "source_sha": "785b1fb0efd94d67f2c512c69cc7393feca27835",
-        "workflow_run_id": "32500701782"
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-mariadb-read-only",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:2628fcf295b952a6a40d0b3983e75e0e62c6c268889f2b18c0783852365bf4bd",
-      "name": "sre-world/frappe-03-mariadb-read-only",
-      "profile": "frappe_db_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-mariadb-read-only.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-mariadb-read-only",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "mariadb-read-only-lock",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-new-records-refused",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:ed094c64d66583c7fdc393063ecd300d4b59b832a6eb8b47a0253c74008efb6e",
-      "name": "sre-world/frappe-03-new-records-refused",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-new-records-refused.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-new-records-refused",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "new-records-refused",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-pages-refused-reported",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:1a3bc6460cf6b01170f60e188d1953509d5288c313742cd2245c32ad752c230f",
-      "name": "sre-world/frappe-03-pages-refused-rep",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-pages-refused-reported.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-pages-refused-reported",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "pages-refused-reported",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 5220.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": "sha256:75fbf1d5efa061baaf522e1d632c6a4922f2e5ad98c3caf2da24d2d17340c825",
-        "calibrated_at": "2026-08-25",
-        "calibration_surface_fingerprint": "sha256:c0001a7cc1e9bff2939c07b425bfd648b461b233530a7906011d46b6eb5e1e32",
-        "current": false,
-        "grader_fingerprint": "sha256:9fe40b453c6c36e3f3a776d80d49ab0ccdbc831cc7bcf28ab5bc10679ac3f2c8",
-        "health_current": false,
-        "health_version": "sha256:47f7553517a2594de72cf5d79c0880d2502368c47c0c8a4955a2fe19387102db",
-        "layer_current": false,
-        "layer_fingerprint": "sha256:da15d1363840af1f8a2d49b7ab26da2e6207b46ff07f496786b577c9cf282fa6",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:921a72d1cde480d3f722eb40ed5042fcaac743a68e79180c4582f7a28ac4bae2",
-        "qualification_surface_fingerprint": "sha256:54bc82a088062c21018e08fdd12901c7baefd4deef4d3696645c3ea9f230e5e0",
-        "source_sha": "bfd937678e77cb0129335a161559e5c3602977d8",
-        "workflow_run_id": "32814424243"
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-readonly-flag-fog",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:37f4e05c1a309e0dd6611cc03333881f96e8d8a96b344f87d68f53b9ddfc5a6a",
-      "name": "sre-world/frappe-03-readonly-flag-fog",
-      "profile": "frappe_db_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-readonly-flag-fog.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-readonly-flag-fog",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "mariadb-readonly-flag-fog",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-saves-fail-and-refusals",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:14a4935da300eddbf614770e11a1091230d6efaeb5849bb157b9a17aabe2f624",
-      "name": "sre-world/frappe-03-saves-fail-refusals",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-saves-fail-and-refusals.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-saves-fail-and-refusals",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "saves-fail-and-refusals",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "03-saves-fail-reported",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:63d41e77d3807f59a050a24471776f0849348a002aa74630b91b209604b5bd23",
-      "name": "sre-world/frappe-03-saves-fail-reported",
-      "profile": "frappe_db_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/03-saves-fail-reported.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/03-saves-fail-reported",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "saves-fail-reported",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 5220.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-job-submissions-fail",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:a4e62b116b0b28cec0d11ea36bf0560f23bbc23c9a7a458f85c8e2b3c55f1c9a",
-      "name": "sre-world/frappe-06-job-submissions-fail",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/06-job-submissions-fail.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/06-job-submissions-fail",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "job-submissions-fail",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-jobs-rejected-on-submit",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:137ac625c6ad42520634cca7309083a9842e6520703e5bc9cb8658cf2933ce0a",
-      "name": "sre-world/frappe-06-jobs-rejected",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/06-jobs-rejected-on-submit.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/06-jobs-rejected-on-submit",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "jobs-rejected-on-submit",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": "sha256:75fbf1d5efa061baaf522e1d632c6a4922f2e5ad98c3caf2da24d2d17340c825",
-        "calibrated_at": "2026-08-25",
-        "calibration_surface_fingerprint": "sha256:7ec0e7221aa31fe1f6fe544acac4d9bbadf9b56ccaf73c351dfa37a5fde739bd",
-        "current": false,
-        "grader_fingerprint": "sha256:8017ee08c046fd07896f308a7f01810f25176264f770769ed75017474127c6f3",
-        "health_current": false,
-        "health_version": "sha256:735228efabd1b87715829c39797e3095d17d8474bf9c59c88c7a1eca859fcc8d",
-        "layer_current": false,
-        "layer_fingerprint": "sha256:e9f04468f8aecdf754f35bd64c70202dc9e3c12d088dce7b19a622c33d55f869",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:4f2843b1e207884978ba25a8725a9be5a0d142b40d6f220d2fa38db57bfa5067",
-        "qualification_surface_fingerprint": "sha256:8ace8541669a5695592b53d03a4012f436829b8973f67ac3748ce792c04e1c28",
-        "source_sha": "9da4e26fe0a8e966782ecec8186cb15be40078aa",
-        "workflow_run_id": "32862496732"
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-queue-lag-bait",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:4a57b8a8fc3f7bd838c0ece3cc72424e97bcbd9923b871d36c7e1db2dfbaf67e",
-      "name": "sre-world/frappe-06-queue-lag-bait",
-      "profile": "frappe_dev_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/06-queue-lag-bait.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/06-queue-lag-bait",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "queue-guard-lag-bait",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": "sha256:c12de5e9be5332368213222aded05ad0c1639f48914e30ec175f7dbf0bac0cc5",
-        "calibrated_at": "2026-08-21",
-        "calibration_surface_fingerprint": "sha256:e48de41a473d1520fe682e9307329507bc6b08433e3f315bb8afcd400e56336e",
-        "current": false,
-        "grader_fingerprint": "sha256:11283ca87b20d3c51582b3705f88dccc7529de909de9e81a0f2392d31cddd788",
-        "health_current": false,
-        "health_version": "sha256:735228efabd1b87715829c39797e3095d17d8474bf9c59c88c7a1eca859fcc8d",
-        "layer_current": false,
-        "layer_fingerprint": "sha256:61e6d7a3b5856b39570150a2283a64632171efeb0e59e93a4b02640d0f7dc054",
-        "policy_current": false,
-        "policy_version": 2,
-        "profile_fingerprint": "sha256:4f2843b1e207884978ba25a8725a9be5a0d142b40d6f220d2fa38db57bfa5067",
-        "qualification_surface_fingerprint": "sha256:957c4d17833c605ef593fad08bbe2a4f1fc5885807d7c498ad1ffe837d88e4cb",
-        "source_sha": "f8869b22e302316991bb35eafab37756e604db08",
-        "workflow_run_id": "32529855500"
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-queue-write-guard",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:a07b5081df7d831dafc9337dce57c555c04fbe07b4f9eec3cefd0d50f2c41170",
-      "name": "sre-world/frappe-06-queue-write-guard",
-      "profile": "frappe_dev_agent",
-      "provisional": false,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/06-queue-write-guard.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/06-queue-write-guard",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "queue-write-guard",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-saves-refused-and-jobs-rejected",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:41d97417fbdeff32d7602d4c695e3d17ec408540ebfebe0742b41e192e08cd6f",
-      "name": "sre-world/frappe-06-saves-jobs-rejected",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/06-saves-refused-and-jobs-rejected.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/06-saves-refused-and-jobs-rejected",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "saves-refused-and-jobs-rejected",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 5220.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-writes-and-jobs-fail",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:624fa0f8bf51fe2e9b8d660e9ca233ef4dc013f51c8855300856c2febed64d23",
-      "name": "sre-world/frappe-06-writes-jobs-fail",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/06-writes-and-jobs-fail.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/06-writes-and-jobs-fail",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "writes-and-jobs-fail",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-connections-and-jobs-fail",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:de5094a6bd6cdc32a933856e0f1dc525e1e9614631e66da1a35533266215a1b5",
-      "name": "sre-world/frappe-07-conns-and-jobs-fail",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-connections-and-jobs-fail.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-connections-and-jobs-fail",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "connections-and-jobs-fail",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": true,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-connections-and-queue-oom",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:958adb467c95c41b1b6059a07460746904b36432d433d7feec6da13f37f9acff",
-      "name": "sre-world/frappe-07-conns-and-queue-oom",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-connections-and-queue-oom.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-connections-and-queue-oom",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "connections-and-queue-oom",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": true,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
         "base_fingerprint": null,
         "calibrated_at": null,
         "calibration_surface_fingerprint": null,
@@ -1482,9 +242,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:5a86fefec1ee5860ff5f39c99ef31e011119bec8b0507e9e3c2a04dd5c61261f",
+      "layer_fingerprint": "sha256:76736fb7616021b46871802f40d8ffe6a2343f720ca860e5ab536344dda8dbe5",
       "name": "sre-world/frappe-07-deletes-jobs-fail",
-      "profile": "frappe_dev_agent",
+      "profile": "frappe_jobs_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -1498,7 +258,7 @@
         "qualified_source_sha": null,
         "workflow_run_id": null
       },
-      "scenario": "frappe/07-writes-and-queue-oom",
+      "scenario": "frappe/07-deletes-and-jobs-fail",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -1510,132 +270,8 @@
       "temporal_emergence": false,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-deletes-and-queue-oom",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:e1bae0955b7560710d71dbaf7639601466d06fd91caf92cfa0ece7c4511cda7e",
-      "name": "sre-world/frappe-07-deletes-queue-oom",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-deletes-and-queue-oom.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-writes-and-queue-oom",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "deletes-and-queue-oom",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-deletes-refused-and-jobs-stalled",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:d4cecac028712875e4d9efd106ef32ba5f4738b752f2f46a8e8c53e31cc987ed",
-      "name": "sre-world/frappe-07-deletes-jobs-stalled",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-deletes-refused-and-jobs-stalled.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-deletes-refused-and-jobs-stalled",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "deletes-refused-and-jobs-stalled",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 5220.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -1668,9 +304,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:4072ff8b614d140c213c1695ff8a9af163bc6472f1fed3e13920cb7549727312",
+      "layer_fingerprint": "sha256:94e9653214f325326d7b3ab38700416eec721768b8d7b67b5f35a88049155abd",
       "name": "sre-world/frappe-07-desk-queue-oom",
-      "profile": "frappe_dev_agent",
+      "profile": "frappe_jobs_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -1696,8 +332,8 @@
       "temporal_emergence": true,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -1730,9 +366,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:fe07b74171095bc5b1019141a4404d450ed62c67c9c7f29971ea5e3ae1329d59",
+      "layer_fingerprint": "sha256:864a4fc2903770d515b665b4107e9cc7f6cf1030394eba5d0b18bf5b22aaefe7",
       "name": "sre-world/frappe-07-desk-queue-outage",
-      "profile": "frappe_dev_agent",
+      "profile": "frappe_jobs_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -1758,132 +394,8 @@
       "temporal_emergence": true,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-edits-and-queue-oom",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:ad115df3dea1e5e00a66c9e19ae537ec6ecbe48e6e5bb85696d67c711601068f",
-      "name": "sre-world/frappe-07-edits-queue-oom",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-edits-and-queue-oom.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-writes-and-queue-oom",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "edits-and-queue-oom",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-jobs-never-finish",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:00e1f2ad69c3a554203419f85e19ef51f07aa8474961c3019f7676c9c4012437",
-      "name": "sre-world/frappe-07-jobs-never-finish",
-      "profile": "frappe_jobs_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-jobs-never-finish.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-jobs-never-finish",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "jobs-never-finish",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": false,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -1916,9 +428,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:d8f9dcb4efb959dd77773395a8e9a376bf0d5a8de706164a232a7a6e2cb0590d",
+      "layer_fingerprint": "sha256:62a0ee3a04412db30452d4de4990196f2ac679026b1a7c373eb0d62448dce463",
       "name": "sre-world/frappe-07-new-recs-jobs-fail",
-      "profile": "frappe_dev_agent",
+      "profile": "frappe_jobs_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -1944,8 +456,8 @@
       "temporal_emergence": false,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -1978,9 +490,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:392a23bf467ccbd3eccc343ef66eb4848efc74002bc4447316003cf33b1ea3a4",
+      "layer_fingerprint": "sha256:f46a3f05936ff61581c7d53f72ce2091b0176d5e8ed03a136f3b6b9fad611c2b",
       "name": "sre-world/frappe-07-new-recs-queue-oom",
-      "profile": "frappe_dev_agent",
+      "profile": "frappe_jobs_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -1994,7 +506,7 @@
         "qualified_source_sha": null,
         "workflow_run_id": null
       },
-      "scenario": "frappe/07-writes-and-queue-oom",
+      "scenario": "frappe/07-new-records-and-queue-oom",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -2006,70 +518,8 @@
       "temporal_emergence": false,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 4,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "07-refused-pages-and-stalled-jobs",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:0e2c833e97a377e9ab0f0c72702dbfb010b03bd15b3c583a730675bba790d6d2",
-      "name": "sre-world/frappe-07-refused-and-stalled",
-      "profile": "frappe_dev_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/frappe/07-refused-pages-and-stalled-jobs.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "frappe/07-refused-pages-and-stalled-jobs",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 76800
-      },
-      "slug": "refused-pages-and-stalled-jobs",
-      "state_note": null,
-      "substrate": "frappe",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 5220.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2102,9 +552,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:827cfcb910150e17b30c94c9112d6e9648ccf6dc1d6d45c3b39d324a127f76bc",
-      "name": "sre-world/frappe-07-writes-queue-oom",
-      "profile": "frappe_dev_agent",
+      "layer_fingerprint": "sha256:e8b8e767295c000976e787dea37437b0e92852b7ea32d2b23dce9087f83804df",
+      "name": "sre-world/frappe-07-saves-jobs-stall",
+      "profile": "frappe_jobs_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2130,8 +580,8 @@
       "temporal_emergence": false,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3420.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2154,19 +604,19 @@
         "source_sha": null,
         "workflow_run_id": null
       },
-      "causal_distance": 4,
+      "causal_distance": 3,
       "eval_ready": true,
-      "fault_presentation": "runtime",
+      "fault_presentation": "committed",
       "hosted_ready": false,
-      "id": "20-webhook-deliveries-refused",
+      "id": "10-T1-statement-timeout-canary",
       "images": {
         "local_load_additions": [],
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:6c39abbddb258ba28edcb0035e052b758b3a4effe082d4ec74f2cfa31962f9af",
-      "name": "sre-world/saleor-spine-webhook-deliveries-refused",
-      "profile": "saleor_async_agent",
+      "layer_fingerprint": "sha256:a050cdd1c0d4ca0529e678a94622c879c3ff584305eb88ab0ee8cb4e2eecd1ae",
+      "name": "sre-world/saleor-spine-10t1-statement-timeout-canary",
+      "profile": "saleor_timeout_eval",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2176,86 +626,24 @@
           "package": null
         },
         "health_version": null,
-        "path": "qualification/locks/saleor-spine/20-webhook-deliveries-refused.json",
+        "path": "qualification/locks/saleor-spine/10-T1-statement-timeout-canary.json",
         "qualified_source_sha": null,
         "workflow_run_id": null
       },
-      "scenario": "saleor-spine/20-webhook-deliveries-refused",
+      "scenario": "saleor-spine/10-T1-statement-timeout-canary",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
         "storage_mb": 40960
       },
-      "slug": "20-webhook-deliveries-refused",
+      "slug": "statement-timeout-canary",
       "state_note": null,
       "substrate": "saleor-spine",
-      "temporal_emergence": false,
+      "temporal_emergence": true,
       "tier": "runtime",
       "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3170.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 4,
-      "eval_ready": true,
-      "fault_presentation": "runtime",
-      "hosted_ready": false,
-      "id": "21-notifications-vanish-silently",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:4479c156ffbc1db15abc91f74b6ee2cafe4eed315245a1cffd0f91bdb91c137b",
-      "name": "sre-world/saleor-spine-notifications-vanish",
-      "profile": "saleor_async_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/saleor-spine/21-notifications-vanish-silently.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "saleor-spine/21-notifications-vanish-silently",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "21-notifications-vanish-silently",
-      "state_note": null,
-      "substrate": "saleor-spine",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 1800.0,
-        "verifier_sec": 3170.0
+        "agent_sec": 3903.0,
+        "verifier_sec": 4743.0
       }
     },
     {
@@ -2378,8 +766,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2393,7 +781,7 @@
         "grader_fingerprint": "sha256:ee2efac4c30fcaf346c4a3ebdb84a0b2675bba3ee79e3f72a13657810fb66939",
         "health_current": true,
         "health_version": null,
-        "layer_current": true,
+        "layer_current": false,
         "layer_fingerprint": "sha256:c3e4851ea6488385cc53d4abcb114405f30e1a930e2a1f50b8027628b5c707bf",
         "policy_current": false,
         "policy_version": 2,
@@ -2412,9 +800,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:c3e4851ea6488385cc53d4abcb114405f30e1a930e2a1f50b8027628b5c707bf",
+      "layer_fingerprint": "sha256:5ec5adafb8353df52acba8026fbf8a16c61952d3b827bad93a7b5061dbb43bf2",
       "name": "sre-world/slack-spine-06f4-maintenance-collision",
-      "profile": "maintenance_collision_temporal_1h_agent",
+      "profile": "maintenance_collision_agent",
       "provisional": false,
       "qualification": {
         "current": false,
@@ -2440,70 +828,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-logins-and-sends-slow",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:4f73d9346626b16b7bb180541812dbad5c26577d7450f8782678176bcb129d7a",
-      "name": "sre-world/slack-spine-06-logins-and-sends-slow",
-      "profile": "logins_sends_slow",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-logins-and-sends-slow.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-logins-and-sends-slow",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "06-logins-and-sends-slow",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2564,8 +890,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2598,9 +924,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:a662275d7a60cc04dada28912248cd05bcf42da73ed8ac4b18138d2ae56a94f9",
+      "layer_fingerprint": "sha256:346e164edb4b59db56878ba1d82d305b3299189021fa3f60f0767ff603a4239b",
       "name": "sre-world/slack-spine-06-logins-unread-sends-slower",
-      "profile": "logins_unread_sends_slower",
+      "profile": "logins_unread_sends_slow",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2626,70 +952,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-sends-collapse-and-stay-collapsed",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:ac34fff0a54139f9041c0c30a5468f16c0273b529062383a994862e7120e5295",
-      "name": "sre-world/slack-spine-06-sends-stay-collapsed",
-      "profile": "retry_storm_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-sends-collapse-and-stay-collapsed.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-sends-collapse-and-stay-collapsed",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "sends-stay-collapsed",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2722,7 +986,7 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:7bb5231eb32c2389e1c96328f9c08f7b1552362191da305f5609de8d8d297411",
+      "layer_fingerprint": "sha256:b49ae4b741f0b20ffd0d3b5ad1277ba6d870ba4fe70e2856de259c5614e7e8d7",
       "name": "sre-world/slack-spine-06-sends-crawl-then-store-slows",
       "profile": "sends_crawl_store_slows",
       "provisional": true,
@@ -2750,8 +1014,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2784,9 +1048,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:3cdd525f206eee18fc3bce79a2f8816364a0f59a651e3523a46167247c06d36f",
+      "layer_fingerprint": "sha256:54043f6a270f9c669215fb1acee204c732105ab243a501926c9aaba580c32c4a",
       "name": "sre-world/slack-spine-06-sends-fail-strict-mode-pool12",
-      "profile": "sends_fail_strict_mode_pool12",
+      "profile": "write_acl_push_loop_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2812,8 +1076,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2846,9 +1110,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:5b2ab9b11d8df4bfde4d7cc29d2d98a91f22e17d502dd4961c897762384f1c36",
+      "layer_fingerprint": "sha256:d54089f597898be77f02b2c68d718a67b45d17b1d0e8cbff2735257d32c28693",
       "name": "sre-world/slack-spine-06-sends-fail-after-strict-mode",
-      "profile": "sends_fail_after_strict_mode",
+      "profile": "write_acl_push_loop_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2874,8 +1138,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2908,9 +1172,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:445818ed46eff677ec983b574681332fc9891eb4dbdfd5956f2481b47c1d7294",
+      "layer_fingerprint": "sha256:6ad9b207745be64a09db434609f8b24e36ac296a571b435ab6537fdfd9cfba1c",
       "name": "sre-world/slack-spine-06-sends-fail-during-compliance-window",
-      "profile": "sends_fail_during_compliance_window",
+      "profile": "write_acl_push_loop_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2936,8 +1200,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -2970,9 +1234,9 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:f6dc5111405baea10890231f1ff386c670c0e145f5f53488ada3d9ad7d68fb5d",
+      "layer_fingerprint": "sha256:cc75e3f823475534f20bdb92b74e25ccd088f31d92c302b8ed026a48d810591d",
       "name": "sre-world/slack-spine-06-sends-fail-strict-pool16",
-      "profile": "sends_fail_strict_pool16",
+      "profile": "write_acl_push_loop_agent",
       "provisional": true,
       "qualification": {
         "current": false,
@@ -2998,256 +1262,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-sends-fail-when-busy",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:68f1e73ad848460695d23e65cbeb84c83f3596e81c47016289f993c79b730142",
-      "name": "sre-world/slack-spine-06-sends-fail-when-busy",
-      "profile": "sends_fail_when_busy",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-sends-fail-when-busy.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-sends-fail-when-busy",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "06-sends-fail-when-busy",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": false,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": false,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-sends-slow-and-history-out-of-order",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:2fbec938875709bc281b3235de187f7df4e64745c6634bc343e51ab073286390",
-      "name": "sre-world/slack-spine-06-slow-sends-out-of-order",
-      "profile": "write_async_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-sends-slow-and-history-out-of-order.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-sends-slow-and-history-out-of-order",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "sends-slow-and-history-out-of-order",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-sends-slow-and-later-every-send-crawls",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:00ef14fa22a8338b7a505adc70908a63ef786ccb6c63622f801907524763265c",
-      "name": "sre-world/slack-spine-06-slow-sends-authz-push",
-      "profile": "write_authz_push_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-sends-slow-and-later-every-send-crawls.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-sends-slow-and-later-every-send-crawls",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "sends-slow-and-later-every-send-crawls",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 3,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-sends-slow-and-later-every-send-crawls-reported",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:a4563e2de860780f87c257e35b8db4fccc85fb5417ea6aeb4d66ac233399d654",
-      "name": "sre-world/slack-spine-06-slow-then-crawl-reported",
-      "profile": "write_authz_push_agent_reported",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-sends-slow-and-later-every-send-crawls-reported.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-sends-slow-and-later-every-send-crawls-reported",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "sends-slow-and-later-every-send-crawls-reported",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -3308,70 +1324,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 2,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-sends-slow-and-stall-every-minute-reported",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:bf009bef5e7a9fa923d8c65caf347bcb80e1cadf7c9b3774b419eaeea7e108e4",
-      "name": "sre-world/slack-spine-06-slow-sends-stall-reported",
-      "profile": "maintenance_collision_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-sends-slow-and-stall-every-minute-reported.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-sends-slow-and-stall-every-minute-reported",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "sends-slow-and-stall-every-minute-reported",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "config",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -3404,7 +1358,7 @@
         "overrides": {}
       },
       "launcher": "k3s",
-      "layer_fingerprint": "sha256:2ff9436b4484190bfc31d9a97d38fe89693d037a5b13a0a65345d8a6a9221269",
+      "layer_fingerprint": "sha256:450fbe3e0020dd66173f19edcde752ce6c2b74608173af8add367e03c3ebf71c",
       "name": "sre-world/slack-spine-06-minute-stall-then-crawl",
       "profile": "maintenance_collision_authz_push_agent",
       "provisional": true,
@@ -3432,70 +1386,8 @@
       "temporal_emergence": true,
       "tier": "config",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
-      }
-    },
-    {
-      "agent_surface": "confined",
-      "calibration": {
-        "base_current": false,
-        "base_fingerprint": null,
-        "calibrated_at": null,
-        "calibration_surface_fingerprint": null,
-        "current": false,
-        "grader_fingerprint": null,
-        "health_current": true,
-        "health_version": null,
-        "layer_current": false,
-        "layer_fingerprint": null,
-        "policy_current": true,
-        "policy_version": 1,
-        "profile_fingerprint": null,
-        "qualification_surface_fingerprint": null,
-        "source_sha": null,
-        "workflow_run_id": null
-      },
-      "causal_distance": 2,
-      "eval_ready": true,
-      "fault_presentation": "committed",
-      "hosted_ready": false,
-      "id": "06-writes-refused-partway-through-the-shift",
-      "images": {
-        "local_load_additions": [],
-        "overrides": {}
-      },
-      "launcher": "k3s",
-      "layer_fingerprint": "sha256:4fef536fbf24a4f3dc13a8dd80e2b00b770426494c3d62aee8105713bf307353",
-      "name": "sre-world/slack-spine-06-writes-refused-midway",
-      "profile": "xid_emergence_agent",
-      "provisional": true,
-      "qualification": {
-        "current": false,
-        "fingerprints": {
-          "capture": null,
-          "evaluator": null,
-          "package": null
-        },
-        "health_version": null,
-        "path": "qualification/locks/slack-spine/06-writes-refused-partway-through-the-shift.json",
-        "qualified_source_sha": null,
-        "workflow_run_id": null
-      },
-      "scenario": "slack-spine/06-writes-refused-partway-through-the-shift",
-      "sizing": {
-        "cpus": 8,
-        "memory_mb": 16384,
-        "storage_mb": 40960
-      },
-      "slug": "writes-refused-midway",
-      "state_note": null,
-      "substrate": "slack-spine",
-      "temporal_emergence": true,
-      "tier": "runtime",
-      "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4980.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -3526,7 +1418,7 @@
       "images": {
         "local_load_additions": [],
         "overrides": {
-          "app": "ghcr.io/abundant-ai/sre-world/slack-app@sha256:b7552a586820daa1effdf64875a927c7d2c063cbbb88e00be48dfc91e66796e2"
+          "app": "ghcr.io/yuekai/sre-world/slack-app@sha256:4a0a6587c7023bbe553a2f3b08db7c2597190313cd5674909d65185793133d93"
         }
       },
       "launcher": "k3s",
@@ -3558,8 +1450,8 @@
       "temporal_emergence": false,
       "tier": "image",
       "timeouts": {
-        "agent_sec": 1500.0,
-        "verifier_sec": 2160.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     },
     {
@@ -3590,7 +1482,7 @@
       "images": {
         "local_load_additions": [],
         "overrides": {
-          "app": "ghcr.io/abundant-ai/sre-world/slack-app@sha256:61348e60229cb1088864726366e9a09a021738450876e2a597cd02ad15427ef1"
+          "app": "ghcr.io/yuekai/sre-world/slack-app@sha256:b73d144c2d817481956653e34095f38cfdc70e554d78f3521e72d0d1d6cd15fd"
         }
       },
       "launcher": "k3s",
@@ -3622,8 +1514,8 @@
       "temporal_emergence": true,
       "tier": "image",
       "timeouts": {
-        "agent_sec": 3600.0,
-        "verifier_sec": 4230.0
+        "agent_sec": 3930.0,
+        "verifier_sec": 4770.0
       }
     }
   ]

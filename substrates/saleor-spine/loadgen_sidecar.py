@@ -4,17 +4,17 @@ Peer of ``substrates/frappe/loadgen_sidecar.py`` (the reference collector) and
 ``substrates/slack-spine/loadgen_sidecar.py``. This process COLLECTS evidence —
 it does NOT grade. During the episode it drives Saleor GraphQL load and writes
 ``loadgen.jsonl`` / metrics / config snapshots / runtime ground-truth into the
-PRIVATE ``/grader`` emptyDir; after the episode/declare it FINALISES the rundir
+PRIVATE ``/grader`` emptyDir; after the episode ends it FINALISES the rundir
 and serves two verifier-only routes:
 
   * ``GET /grader/episode_done`` — 503 until finalised, then ``{done: true}``.
   * ``GET /grader/bundle``       — the fixed-allowlist tar of the rundir
     (ground-truth.yaml + loadgen.jsonl + config_after + config_at_boot +
-    meta.json + everything the vendored oracle needs).
+    meta.json + everything the vendored verifier needs).
 
 Both routes are gated by the verifier-only ``X-SRE-World-Grader-Access`` token
 (``loadgen_grader_common.build_grader_app``). Grading happens VERIFIER-SIDE:
-the vendored ``tests/oracle/evaluate.py`` runs on the fetched bundle. This
+the vendored ``tests/verifier/evaluate.py`` runs on the fetched bundle. This
 sidecar NEVER computes the reward (the old in-pod ``evaluate_run`` /
 ``GET /grader/verdict`` path is gone).
 
@@ -44,8 +44,8 @@ Only the Saleor-specific pieces live here:
   * ``parse_metrics`` — Saleor gauge names (P2 obs seam; not yet wired).
 
 Grading-hooks contract (identical to frappe/slack): the sidecar imports the
-staged ``grader_hooks`` and the shared ``oracle.assemble`` (a compatibility
-re-export of ``loadgen-common/evidence_collector.py``) and calls
+staged ``grader_hooks`` and the shared ``loadgen-common/evidence_collector.py``
+and calls
 ``capture_sources`` / ``build_config_after`` / ``require_declare_snapshot`` /
 ``build_docker_state`` / ``complete_soak_end_tree``. No answer key mounted
 (``/grader-key`` absent) → evidence collection FAILS LOUDLY (no fabricated
@@ -79,14 +79,14 @@ import yaml  # noqa: E402
 from prometheus_client.parser import text_string_to_metric_families  # noqa: E402
 
 from loadgen.profile_loader import merge_env_profiles  # noqa: E402
-from loadgen.runner import DRIVERS, LoadGen  # noqa: E402
+from loadgen.runner import DRIVERS, LoadGen, agent_window_s  # noqa: E402
 # Profiles are DATA (loadgen-common/loadgen/profiles.yaml): the shared builtin
 # registry now carries every substrate's profiles (incl. saleor_*), so there is
 # no separate saleor schedule module to merge.
 from loadgen.schedule import PROFILES as BUILTIN_PROFILES  # noqa: E402
 
 # Shared HTTP wiring + path constants + the agent-freezer helper. Serving the
-# collector routes (POST /declare + GET /healthz + GET /grader/{episode_done,
+# collector routes (POST /report + POST /declare_repair_complete + GET /healthz + GET /grader/{episode_done,
 # bundle}) and the fixed-allowlist tar bundle all live here — byte-identical
 # across every substrate. The saleor sidecar adds ONLY the async-lane receiver.
 from loadgen_grader_common import (  # noqa: E402
@@ -97,13 +97,10 @@ from loadgen_grader_common import (  # noqa: E402
     CONFIG_AT_SUBMISSION_JSON,
     EPISODE_DONE_JSON,
     REPORT_JSON,
-    UNDECLARED_FINALIZATION_JSON,
     build_grader_app as _build_grader_app_common,
     load_grader_access_token,
+    pin_episode_t0,
     request_agent_freeze,
-    write_undeclared_finalization_receipt,
-    _validate_declare_body,
-    _write_report,
 )
 
 # Saleor-specific driver + profile modules.
@@ -147,7 +144,7 @@ SUT_ADMIN_PORT = int(os.environ.get("SUT_ADMIN_PORT", "8000"))
 # loadgen.scrapeServices (comma-separated host:port, e.g. "rabbitmq:15692" for
 # the broker's native prometheus plugin); the sidecar then appends one
 # async_metrics.jsonl row per (target, sample) every SCRAPE_INTERVAL_S, in the
-# LOCKED shape the oracle's lane_health gate consumes (ported verbatim from the
+# LOCKED shape the lane_health check consumes (ported verbatim from the
 # slack sidecar — single contract across substrates).
 SCRAPE_SERVICES = [
     s.strip() for s in os.environ.get("SCRAPE_SERVICES", "").split(",") if s.strip()
@@ -299,7 +296,7 @@ _ATTRIBUTION_REGISTRY_CACHE: dict[str, Any] = {"loaded": False, "value": None}
 def _attribution_registry() -> dict[str, Any] | None:
     """The answer key's component_registry (None when no key is mounted or it
     carries none). Cached after first read — the ConfigMap is immutable for
-    the episode. Used by /declare token validation; NEVER exposed except in a
+    the episode. Used by /report token validation; NEVER exposed except in a
     rejection response (deferred disclosure — the agent meets the vocabulary
     only at submission time, not during diagnosis)."""
     if not _ATTRIBUTION_REGISTRY_CACHE["loaded"]:
@@ -400,7 +397,7 @@ async def scrape_async_metrics(stop: "asyncio.Event", t0: float) -> None:
 #
 # Structure ported from frappe. Saleor: SNAPSHOT_SERVICES is empty and the
 # snapshot records an empty services map (see the env comment above). Failures
-# of a CONFIGURED target are RECORDED per role (not dropped) so the oracle can
+# of a CONFIGURED target are RECORDED per role (not dropped) so the verifier can
 # FAIL CLOSED if a snapshot target was unreachable at declare time.
 # ---------------------------------------------------------------------------- #
 async def _snapshot_service_configs() -> dict[str, Any]:
@@ -428,7 +425,7 @@ async def _snapshot_service_configs() -> dict[str, Any]:
                 resp.raise_for_status()
                 config = await resp.json()
                 return role, {"ok": True, "config": config}
-        except Exception as exc:  # noqa: BLE001 — record; oracle fails closed
+        except Exception as exc:  # noqa: BLE001 — record; the verifier fails closed
             log.warning("declare-snapshot: GET %s failed: %s", url, exc)
             return role, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -520,119 +517,133 @@ def _write_config_at_soak_end(
 # validation (the ``valid_components`` disclosure) + the post-episode honesty
 # guard + the runtime pg_settings capture (vs frappe's /admin/config fan-out).
 # ---------------------------------------------------------------------------- #
-async def _finish_declaration_boundary(
-    lg: LoadGen,
-    state: dict[str, Any],
-    submission_services: dict[str, Any],
-    submission_runtime: dict[str, Any],
-) -> None:
-    """Freeze uid 10001, capture the post-freeze runtime basis, then start soak."""
-    try:
-        await asyncio.sleep(0.1)  # let the accepted response reach the submitter
-        receipt = await request_agent_freeze(state["grader_access_token"])
-        post_services = await _snapshot_service_configs()
-        post_runtime = await _collect_runtime_snapshot()
-        changed = (
-            submission_services != post_services
-            or submission_runtime != post_runtime
-        )
-        ack_s = round(asyncio.get_running_loop().time() - lg._t0, 6)
-        receipt.update(
-            {
-                "freeze_ack_s": ack_s,
-                "submission_to_freeze_mutation": changed,
-                "submission_snapshot": CONFIG_AT_SUBMISSION_JSON.name,
-                "post_freeze_snapshot": CONFIG_AFTER_FREEZE_JSON.name,
+def make_agent_boundary_hook(lg: LoadGen, state: dict[str, Any]):
+    """The terminal agent boundary: freeze uid 10001, capture the frozen basis.
+
+    ONE boundary for both endings — an early declaration and the agent window
+    elapsing. The runner awaits it before it opens the graded soak, so the
+    minimality basis is always the POST-FREEZE runtime snapshot: by the time it
+    is taken, the agent can no longer mutate anything.
+    """
+
+    async def _boundary(reason: str) -> None:
+        try:
+            await asyncio.sleep(0.1)  # let the accepted response reach the submitter
+            receipt = await request_agent_freeze(state["grader_access_token"])
+            post_services = await _snapshot_service_configs()
+            post_runtime = await _collect_runtime_snapshot()
+            submission_services = state.get("submission_services")
+            submission_runtime = state.get("submission_runtime")
+            changed = (
+                None
+                if submission_services is None
+                else (
+                    submission_services != post_services
+                    or submission_runtime != post_runtime
+                )
+            )
+            ack_s = round(asyncio.get_running_loop().time() - lg._t0, 6)
+            receipt.update(
+                {
+                    "reason": reason,
+                    "freeze_ack_s": ack_s,
+                    "submission_to_freeze_mutation": changed,
+                    "submission_snapshot": CONFIG_AT_SUBMISSION_JSON.name,
+                    "post_freeze_snapshot": CONFIG_AFTER_FREEZE_JSON.name,
+                }
+            )
+            post_capture: dict[str, Any] = {
+                "captured_s": ack_s,
+                "services": post_services,
             }
-        )
-        post_capture: dict[str, Any] = {"captured_s": ack_s, "services": post_services}
-        post_capture.update(post_runtime)  # "runtime" or "runtime_error"
-        CONFIG_AFTER_FREEZE_JSON.write_text(json.dumps(post_capture, indent=2))
-        AGENT_BOUNDARY_JSON.write_text(json.dumps(receipt, indent=2, sort_keys=True))
-        # Flip LoadGen into the graded soak only AFTER the agent is frozen and
-        # the basis is on disk. The declare-time minimality basis is the
-        # POST-FREEZE runtime snapshot (the agent can no longer mutate it).
-        lg.declare()
-        _write_config_at_declare(post_services, post_runtime, lg.declare_ts_s)
-    except Exception as exc:
-        state["boundary_error"] = f"{type(exc).__name__}: {exc}"
-        task = state.get("run_task")
-        if task is not None:
-            task.cancel()
-        log.exception("terminal declaration boundary FAILED: %s", exc)
+            post_capture.update(post_runtime)  # "runtime" or "runtime_error"
+            CONFIG_AFTER_FREEZE_JSON.write_text(json.dumps(post_capture, indent=2))
+            AGENT_BOUNDARY_JSON.write_text(json.dumps(receipt, indent=2, sort_keys=True))
+            _write_config_at_declare(post_services, post_runtime, ack_s)
+        except Exception as exc:
+            state["boundary_error"] = f"{type(exc).__name__}: {exc}"
+            log.exception("terminal agent boundary (%s) FAILED: %s", reason, exc)
+            raise
+
+    return _boundary
+
+
+def validate_report_tokens(body: Any) -> dict[str, Any] | None:
+    """Reject report findings outside the closed attribution inventory.
+
+    The minimal-instruction convention keeps the registry undisclosed up front so
+    diagnosis is not a multiple-choice quiz, which means an invalid token has to be
+    rejected LOUDLY *with* the valid inventory rather than quietly persisted. This
+    runs on the advisory POST /report and shapes only the report file; it has no
+    bearing on reward, and ``submit_incident_report --components`` depends on this
+    exact response shape (valid_services / valid_components /
+    component_definitions).
+
+    Returns an error payload to answer 400 with, or ``None`` when the tokens are
+    recognized (including when no answer key is mounted to check against).
+    """
+    registry = _attribution_registry()
+    if registry is None or not isinstance(body, dict):
+        return None
+    valid_services = set(registry.get("services") or [])
+    valid_components = set(registry.get("components") or [])
+    bad = []
+    for finding in body.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        svc, comp = finding.get("service"), finding.get("component")
+        if svc not in valid_services or comp not in valid_components:
+            bad.append({"service": svc, "component": comp})
+    if not bad:
+        return None
+    log.warning(
+        "POST /report with unrecognized tokens %s — rejected (report NOT consumed)",
+        bad,
+    )
+    return {
+        "error": "unrecognized service/component token(s) — the report was NOT "
+                 "consumed; resubmit with tokens from the inventory below",
+        "rejected": bad,
+        "valid_services": sorted(valid_services),
+        "valid_components": sorted(valid_components),
+        "component_definitions": registry.get("definitions") or {},
+    }
 
 
 async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> Any:
-    """aiohttp handler for POST /declare.
+    """aiohttp handler for POST /declare_repair_complete.
 
-    Validate and accept the first report, then finalize the freezer boundary in
-    the background. Track B's ``submit_incident_report`` posts here. Malformed,
-    unrecognized-token, or late reports fail loudly.
+    THE explicit ending. It takes no body: what it means is "I am done touching
+    the system", which is a lifecycle statement and not a narrative. It used to be
+    the incident-report endpoint, so ending the episode required writing prose and
+    writing prose ended the episode; the incident report now lives on POST /report
+    and has no lifecycle authority at all.
+
+    First declaration wins, and there is no deadline it can miss. An episode that
+    never calls this is frozen at its deadline and graded from its final state.
     """
+    del request  # the declaration carries no payload
     from aiohttp import web
 
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        log.error("POST /declare with non-JSON body: %s", exc)
-        return web.json_response(
-            {"ok": False, "error": f"declare body is not valid JSON: {exc}"}, status=400
-        )
-
-    try:
-        _validate_declare_body(body)
-    except ValueError as exc:
-        log.error("POST /declare with invalid incident report: %s", exc)
-        return web.json_response({"ok": False, "error": str(exc)}, status=400)
-
-    # TOKEN VALIDATION against the closed attribution inventory (the
-    # minimal-instruction convention: the registry is NOT disclosed up front —
-    # no multiple-choice priming during diagnosis — so an invalid token must
-    # be rejected LOUDLY *with* the valid inventory, and must NOT consume the
-    # one accepted report. Only active when the answer key is mounted and
-    # carries a component_registry (every stamped saleor scenario does). The
-    # `submit_incident_report --components` feature depends on this exact
-    # response shape (valid_services / valid_components / component_definitions).
-    registry = _attribution_registry()
-    if registry is not None:
-        valid_services = set(registry.get("services") or [])
-        valid_components = set(registry.get("components") or [])
-        bad = []
-        for f in body.get("findings") or []:
-            svc, comp = f.get("service"), f.get("component")
-            if svc not in valid_services or comp not in valid_components:
-                bad.append({"service": svc, "component": comp})
-        if bad:
-            log.warning("POST /declare with unrecognized tokens %s — rejected "
-                        "(report NOT consumed)", bad)
-            return web.json_response(
-                {
-                    "ok": False,
-                    "error": "unrecognized service/component token(s) — the "
-                             "report was NOT consumed; resubmit with tokens "
-                             "from the inventory below",
-                    "rejected": bad,
-                    "valid_services": sorted(valid_services),
-                    "valid_components": sorted(valid_components),
-                    "component_definitions": registry.get("definitions") or {},
-                },
-                status=400,
-            )
-
-    # HONESTY GUARD (trajectory-forensics): a declare landing after the
+    # HONESTY GUARD (trajectory-forensics): a declaration landing after the
     # episode has completed and finalized used to return ok:true (and even a
     # soak_start_s) while the frozen evidence recorded "no declaration" — a
     # false success signal to the agent. Refuse loudly instead.
+    #
+    # NOT a deadline. This is conditioned on the EVIDENCE being sealed, not on a
+    # clock. The freezer kills the agent at agent_window_s, so nothing an agent
+    # does can reach this branch — only a process that outlived its own freeze
+    # can, and telling that process "recorded" would be a lie.
     if EPISODE_DONE_JSON.exists():
         log.error(
-            "POST /declare AFTER episode end — the evidence rundir is frozen; "
-            "this declaration is NOT graded."
+            "POST /declare_repair_complete AFTER episode end — the evidence "
+            "rundir is frozen; this declaration is NOT graded."
         )
         return web.json_response(
             {
                 "ok": False,
-                "error": "too late: the load episode has ended and grading is "
-                "frozen; this declaration will not be graded.",
+                "error": "evidence_already_sealed: the episode has completed and "
+                "the grader bundle is frozen, so this declaration cannot be recorded.",
             },
             status=409,
         )
@@ -641,7 +652,8 @@ async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> An
     async with declaration_lock:
         if state.get("declaration_locked"):
             log.warning(
-                "POST /declare received after the first accepted declaration "
+                "POST /declare_repair_complete received after the first "
+                "accepted declaration "
                 "(declare_ts_s=%s)",
                 lg.declare_ts_s,
             )
@@ -650,8 +662,15 @@ async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> An
             )
 
         if not lg.begin_declaration():
+            # Only reachable once the episode itself is over; the agent is
+            # already frozen by then, so nothing it runs can get here.
             return web.json_response(
-                {"ok": False, "error": "declaration_deadline_elapsed"}, status=409
+                {
+                    "ok": False,
+                    "error": "episode_already_complete",
+                    "message": "the episode is already over and is being graded",
+                },
+                status=409,
             )
 
         state["declaration_locked"] = True
@@ -661,7 +680,6 @@ async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> An
         # the live pg_settings runtime read.
         services = await _snapshot_service_configs()
         runtime_capture = await _collect_runtime_snapshot()
-        _write_report(body)
         submitted_s = round(asyncio.get_running_loop().time() - lg._t0, 6)
         submission_capture: dict[str, Any] = {
             "captured_s": submitted_s,
@@ -671,20 +689,18 @@ async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> An
         CONFIG_AT_SUBMISSION_JSON.write_text(
             json.dumps(submission_capture, indent=2), encoding="utf-8"
         )
-        state["boundary_task"] = asyncio.create_task(
-            _finish_declaration_boundary(lg, state, services, runtime_capture),
-            name="agent-freeze-boundary",
-        )
+        state["submission_services"] = services
+        state["submission_runtime"] = runtime_capture
+        lg.declare()
     log.info(
-        "POST /declare accepted and locked: wrote %s; awaiting agent freezer",
-        REPORT_JSON,
+        "POST /declare_repair_complete accepted and locked; awaiting agent freezer"
     )
     return web.json_response(
         {
             "ok": True,
             "already_declared": False,
             "final": True,
-            "message": "incident report accepted; exit immediately",
+            "message": "repair declared complete; exit immediately",
             "declare_ts_s": None,
             "soak_start_s": None,
         }
@@ -695,7 +711,7 @@ def build_grader_app(state: dict[str, Any]) -> Any:
     """Build the aiohttp app with the Saleor declare + gated /grader routes.
 
     Thin wrapper around :func:`loadgen_grader_common.build_grader_app` (which
-    owns the byte-identical POST /declare + GET /healthz + GET /grader/*
+    owns the byte-identical POST /report + POST /declare_repair_complete + GET /healthz + GET /grader/*
     routes), plus the saleor-only async-lane receiver: POST /loadgen-webhook is
     the targetUrl of the ORDER_CREATED webhook the sidecar registers at
     provisioning — Saleor's Celery worker delivers back to us, closing the
@@ -703,7 +719,7 @@ def build_grader_app(state: dict[str, Any]) -> Any:
     """
     from aiohttp import web
 
-    app = _build_grader_app_common(state, handle_declare)
+    app = _build_grader_app_common(state, handle_declare, validate_report_tokens)
 
     async def handle_loadgen_webhook(request: Any) -> Any:
         ts = asyncio.get_event_loop().time()
@@ -838,7 +854,7 @@ def _capture_postgres_invariant_phase(
     *,
     identity_basis: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
-    """Capture one complete verifier-v2 PostgreSQL evidence phase."""
+    """Capture one complete verifier PostgreSQL evidence phase."""
     import re as _re
     import psycopg as _psycopg
 
@@ -973,7 +989,7 @@ def _capture_postgres_invariant_phase(
 # ---------------------------------------------------------------------------- #
 # Evidence finalization. Everything below runs AFTER the soak inside this
 # agent-unreachable pod. /grader becomes a complete, offline-regradeable rundir;
-# the VERIFIER-side task-shipped oracle (tests/oracle/evaluate.py) makes ALL
+# the VERIFIER-side task-shipped verifier (tests/verifier/evaluate.py) makes ALL
 # grading decisions on the fetched bundle — this process NEVER computes a reward.
 # ---------------------------------------------------------------------------- #
 async def _collect_episode_evidence(
@@ -1133,7 +1149,7 @@ async def _collect_episode_evidence(
 
     # Seeded-table rowcount probe (anti-TRUNCATE fence, 30-D2). Probed ONLY
     # when the answer key's thresholds declare `db_min_rowcounts`; written as
-    # sut/db_state.json ({"table_rowcounts": {...}}, the shape the oracle's
+    # sut/db_state.json ({"table_rowcounts": {...}}, the shape the
     # db_min_rowcounts check consumes; `sut/` is already in the bundle dirs so
     # offline regrades keep working). A probe FAILURE writes no value for the
     # table — the check FAILS CLOSED, so a hack that breaks the probe cannot
@@ -1196,7 +1212,7 @@ async def _collect_episode_evidence(
     # "replication_slots" key ONLY when the answer key declares
     # `db_absent_replication_slots`. When absent the key is not written, so a
     # rowcount/index-only scenario's db_state.json is BYTE-IDENTICAL to before.
-    # A probe FAILURE leaves the key ABSENT -> the oracle's check FAILS CLOSED
+    # A probe FAILURE leaves the key ABSENT -> the check FAILS CLOSED
     # for every declared slot, so breaking the probe cannot grade better than
     # leaving it readable. Slot names come from the SEALED answer key (not agent-
     # reachable) and are identifier-checked before being trusted.
@@ -1313,10 +1329,10 @@ async def _collect_episode_evidence(
     # Copy the runtime ground-truth + the pre-rendered config_before map into the
     # rundir so the fixed-allowlist bundle carries them (BUNDLE_FILES includes
     # ground-truth.yaml + config-before.json; test.sh asserts rundir/
-    # ground-truth.yaml exists). The verifier-side oracle reads these.
+    # ground-truth.yaml exists). The verifier-side grader reads these.
     (GRADER / "ground-truth.yaml").write_bytes(GROUND_TRUTH_PATH.read_bytes())
     (GRADER / "config-before.json").write_bytes(CONFIG_BEFORE_MAP_PATH.read_bytes())
-    log.info("finalized evidence; verifier-side oracle owns all grading decisions")
+    log.info("finalized evidence; the verifier owns all grading decisions")
 
 
 # ---------------------------------------------------------------------------- #
@@ -1325,7 +1341,7 @@ async def _collect_episode_evidence(
 async def start_http_server(state: dict[str, Any]) -> Any:
     """Start the single long-lived aiohttp server on :DECLARE_PORT.
 
-    Started BEFORE the episode (POST /declare returns 503 until state["lg"] is
+    Started BEFORE the episode (POST /declare_repair_complete returns 503 until state["lg"] is
     published by run_episode). Never cleaned up — after episode end it is the
     fetch surface the task's tests/test.sh polls.
     """
@@ -1335,8 +1351,8 @@ async def start_http_server(state: dict[str, Any]) -> Any:
     site = web.TCPSite(runner, host="0.0.0.0", port=DECLARE_PORT)
     await site.start()
     log.info(
-        "http server listening on :%d (POST /declare, GET /healthz, "
-        "GET /grader/{episode_done,bundle} — verifier capability required)",
+        "http server listening on :%d (POST /report, POST /declare_repair_complete, GET /healthz, "
+        "POST+GET /grader/{episode-start,episode_done,bundle} — verifier capability required)",
         DECLARE_PORT,
     )
     return runner
@@ -1356,7 +1372,7 @@ _WEBHOOK_TARGET_URL = "http://loadgen:9100/loadgen-webhook"
 
 
 def _publish_live_loadgen(state: dict[str, Any], lg: Any) -> None:
-    """Publish the declare target and open the agent-start gate together."""
+    """Publish the declare target and open the environment-readiness gate."""
     if state.get("lg") is not None or state.get("episode_ready"):
         raise RuntimeError("live LoadGen was already published")
     state["lg"] = lg
@@ -1523,35 +1539,6 @@ async def run_episode(state: dict[str, Any]) -> None:
                     if conn.execute("SELECT to_regclass(%s)", (f"public.{table}",)).fetchone()[0] is None:
                         return False
                     return int(conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]) >= minimum
-                if kind == "table_privilege_absent":
-                    # A REVOKE landing AFTER the agent's clock starts means the
-                    # oracle repairs a healthy system and the fault arrives behind
-                    # it — every leg boots, every check runs, and the numbers
-                    # impersonate a hard task. This gate holds bring-up until the
-                    # privilege is genuinely gone.
-                    if set(_boot_gate) != {"kind", "role", "table", "privilege"}:
-                        raise RuntimeError("table_privilege_absent gate has wrong keys")
-                    role = _boot_gate["role"]
-                    table = _boot_gate["table"]
-                    privilege = _boot_gate["privilege"]
-                    import re as _re
-                    for label, value in (("role", role), ("table", table)):
-                        if not isinstance(value, str) or _re.fullmatch(r"[a-z_][a-z0-9_]*", value) is None:
-                            raise RuntimeError(f"table privilege gate {label} is invalid")
-                    if privilege not in {"SELECT", "INSERT", "UPDATE", "DELETE"}:
-                        raise RuntimeError("table privilege gate privilege is invalid")
-                    # A role or table that does not exist yet is NOT "privilege
-                    # absent" — fault-init has not finished provisioning, so keep
-                    # waiting rather than opening the gate on a half-built cluster.
-                    if conn.execute(
-                        "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=%s)", (role,)
-                    ).fetchone()[0] is not True:
-                        return False
-                    if conn.execute("SELECT to_regclass(%s)", (f"public.{table}",)).fetchone()[0] is None:
-                        return False
-                    return not bool(conn.execute(
-                        "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
-                    ).fetchone()[0])
                 raise RuntimeError(f"unknown typed boot gate kind: {kind!r}")
 
         _gate_deadline = time.time() + 1800
@@ -1641,17 +1628,18 @@ async def run_episode(state: dict[str, Any]) -> None:
                 raise reg_err
 
     lg = LoadGen(profile=profile, out_path=GRADER / "loadgen.jsonl")
-    await lg.start()
-    if lg._t0 is None:
-        raise RuntimeError("LoadGen.start() did not pin t0")
+    lg.set_agent_boundary_hook(make_agent_boundary_hook(lg, state))
     # Publish the live LoadGen to the (already-running) HTTP server: this
-    # un-gates POST /declare (the agent's resolution signal).
-    # Publish the live LoadGen and open the explicit agent-start gate as one
-    # synchronous state transition.  Saleor's typed boot gates, boot evidence,
-    # and webhook registration all happen above; starting an agent before this
-    # point lets its declare/finalize windows expire against a half-initialized
-    # episode (most visibly while the large audit-table seed is still landing).
+    # un-gates POST /grader/episode-start (which pins t0) and POST /declare_repair_complete (the
+    # agent's resolution signal). Saleor's typed boot gates, boot evidence, and
+    # webhook registration all happen above; Harbor's healthcheck also requires
+    # its readiness predicates before making the start POST. Those preconditions
+    # sit outside the episode clock.
     _publish_live_loadgen(state, lg)
+
+    # THE EPISODE ORIGIN: t0 is pinned by the packaged Harbor healthcheck after
+    # readiness and before Harbor setup. Setup is therefore inside the window.
+    await pin_episode_t0(lg)
 
     # Async-tier metrics scrape (queue-lag observability; DEFAULT-OFF). Started
     # ONLY when SCRAPE_SERVICES is non-empty (a queue/consumer-lag scenario sets
@@ -1690,6 +1678,19 @@ async def run_episode(state: dict[str, Any]) -> None:
             except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — scraper end is best-effort
                 async_scraper.cancel()
 
+    expected_completion = (
+        "declared_soak_complete"
+        if lg.declare_ts_s is not None
+        else "window_elapsed_soak_complete"
+    )
+    if lg.soak_start_s is None or lg.completion_reason != expected_completion:
+        raise RuntimeError(
+            "LoadGen returned without a completed soak lifecycle: "
+            f"declare_ts_s={lg.declare_ts_s!r}, "
+            f"soak_start_s={lg.soak_start_s!r}, "
+            f"completion_reason={lg.completion_reason!r}"
+        )
+
     if lg._t0 is None:
         raise RuntimeError("LoadGen completed without a pinned t0")
     end_s = round(asyncio.get_running_loop().time() - lg._t0, 3)
@@ -1698,41 +1699,45 @@ async def run_episode(state: dict[str, Any]) -> None:
     # Post-declare-drift basis (FIX 2): with the soak window now closed and just
     # BEFORE finalization, take a SECOND live runtime snapshot. evaluate.py diffs
     # the config_after tree rebuilt from THIS against the declare-time tree — a
-    # knob that moved during the graded soak is post-declare drift. Captured ONLY
-    # for a DECLARED episode. A failed pg read records a runtime_error and
-    # _write_config_at_soak_end SKIPS the file, so the drift gate stays dormant.
-    if declared:
-        soak_end_capture = await _collect_runtime_snapshot()
-        if "runtime" in soak_end_capture:
-            _write_config_at_soak_end(
-                soak_end_capture, asyncio.get_running_loop().time()
-            )
-        else:
-            log.error(
-                "soak-end snapshot: collect_runtime_snapshot FAILED (%s) — "
-                "config_at_soak_end.json NOT written; the post-declare-drift "
-                "gate stays dormant for this episode",
-                soak_end_capture.get("runtime_error"),
-            )
+    # knob that moved during the graded soak is post-declare drift. Always
+    # captured: the soak is the graded window and it always runs. A failed pg
+    # read records a runtime_error and _write_config_at_soak_end skips the file;
+    # materialization then fails loudly because completed soak evidence is
+    # required.
+    soak_end_capture = await _collect_runtime_snapshot()
+    if "runtime" in soak_end_capture:
+        _write_config_at_soak_end(
+            soak_end_capture, asyncio.get_running_loop().time()
+        )
+    else:
+        log.error(
+            "soak-end snapshot: collect_runtime_snapshot FAILED (%s) — "
+            "config_at_soak_end.json NOT written; completed-episode "
+            "materialization will fail closed",
+            soak_end_capture.get("runtime_error"),
+        )
 
-    # Materialize the oracle's REQUIRED rundir artifacts (evaluate_run, run
+    # Materialize the verifier's REQUIRED rundir artifacts (evaluate_run, run
     # VERIFIER-SIDE on the bundle, FAILS LOUDLY on any missing one):
     #   * meta.json — the episode window the outcome gate slices on.
     #   * metrics.jsonl — EMPTY until a scrape source is wired (saleor's
     #     conditional gates — pool_wait, lane_health — are dormant, so an
     #     empty file is honest, not a stub).
-    #   * report.json — the FILE is required, the value may be null (nop path:
-    #     no declare ever happened; the declare handler writes the real one).
+    #   * report.json — the FILE is required, the value may be null (no report
+    #     was filed; POST /report writes the real one). It is advisory telemetry:
+    #     nothing about the lifecycle or reward is read out of it.
     meta_tmp = (GRADER / "meta.json").with_suffix(".json.tmp")
     meta_tmp.write_text(json.dumps({
         "run_id": lg._temporal_run_id,
         "profile": PROFILE_NAME,
         "declare_ts_s": lg.declare_ts_s,
+        "freeze_ts_s": lg.freeze_ts_s,
+        "freeze_reason": lg.freeze_reason,
         "soak_start_s": lg.soak_start_s,
+        "agent_window_s": agent_window_s(profile),
+        "soak_s": profile.soak_duration_s(),
         "end_s": end_s,
         "completion_reason": lg.completion_reason,
-        "undeclared_finalize_requested_s": lg.undeclared_finalize_requested_s,
-        "undeclared_evidence_min_s": profile.effective_undeclared_evidence_min_s(),
         "target_base_url": TARGET_BASE_URL,
         "loadgen_summary": summary,
     }, indent=2), encoding="utf-8")
@@ -1782,24 +1787,19 @@ async def run_episode(state: dict[str, Any]) -> None:
     # Finalise the evidence rundir BEFORE writing episode_done.json. On failure,
     # the exception propagates to _run_and_idle which records an episode_done
     # with error → the verifier rejects it before evaluating (fail-loud).
-    if lg.completion_reason == "verifier_finalized_without_declaration":
-        write_undeclared_finalization_receipt(state, completion_s=end_s)
-    elif UNDECLARED_FINALIZATION_JSON.exists():
-        raise RuntimeError(
-            "undeclared-finalization.json exists outside the verifier-finalized lifecycle"
-        )
-
     await _collect_episode_evidence(declared=declared, postgres_before=postgres_before)
 
     _episode_done_writer(
         {
             "done": True,
             "declare_ts_s": lg.declare_ts_s,
+            "freeze_ts_s": lg.freeze_ts_s,
+            "freeze_reason": lg.freeze_reason,
             "soak_start_s": lg.soak_start_s,
+            "agent_window_s": agent_window_s(profile),
+            "soak_s": profile.soak_duration_s(),
             "end_s": end_s,
             "completion_reason": lg.completion_reason,
-            "undeclared_finalize_requested_s": lg.undeclared_finalize_requested_s,
-            "undeclared_evidence_min_s": profile.effective_undeclared_evidence_min_s(),
         }
     )
     log.info(
@@ -1817,8 +1817,8 @@ async def _sleep_forever() -> None:
         await asyncio.sleep(3600)
 
 
-def _record_episode_start_failure(state: dict[str, Any], exc: BaseException) -> None:
-    """Expose a pre-publication failure to the agent-start readiness gate."""
+def _record_episode_setup_failure(state: dict[str, Any], exc: BaseException) -> None:
+    """Expose a pre-t0 setup failure to the environment-readiness gate."""
     error = f"{type(exc).__name__}: {exc}"
     state["episode_ready_error"] = error
     _episode_done_writer(
@@ -1848,7 +1848,7 @@ async def _run_and_idle() -> None:
     except Exception as exc:  # noqa: BLE001
         log.exception("loadgen sidecar episode FAILED: %s", exc)
         try:
-            _record_episode_start_failure(state, exc)
+            _record_episode_setup_failure(state, exc)
         except Exception as write_exc:  # noqa: BLE001
             log.error("ALSO failed to write episode_done.json: %r", write_exc)
     await _sleep_forever()

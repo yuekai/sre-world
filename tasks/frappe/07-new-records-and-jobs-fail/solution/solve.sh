@@ -31,18 +31,19 @@ mysql --protocol=TCP -h svc-mariadb -P 3306 \
                                   WHERE TABLE_NAME = 'tabDocType' LIMIT 1) \
            ORDER BY GRANTEE, PRIVILEGE_TYPE;"
 
-echo "[solve] LEG 2 — redis-queue replication guard BEFORE repair:"
-python3 -c "import socket;s=socket.create_connection(('svc-redis-queue',6379),5);s.sendall(b'*3\r\n\$6\r\nCONFIG\r\n\$3\r\nGET\r\n\$21\r\nmin-replicas-to-write\r\n');print(s.recv(4096).decode(errors='replace'))"
-reconfigure-infra.sh redis-queue min-replicas-to-write 0
-echo "[solve] LEG 2 — AFTER repair:"
-python3 -c "import socket;s=socket.create_connection(('svc-redis-queue',6379),5);s.sendall(b'*3\r\n\$6\r\nCONFIG\r\n\$3\r\nGET\r\n\$21\r\nmin-replicas-to-write\r\n');print(s.recv(4096).decode(errors='replace'))"
+echo "[solve] LEG 2 — restore only the queue dequeue commands and persist them:"
+reconfigure-infra.sh redis-queue dequeue-acl restore
 
 submit_incident_report \
   --service mariadb \
   --component mariadb.grants \
   --mechanism "The site database account had the INSERT privilege revoked on the site schema, so creating anything new failed with ERROR 1142 (INSERT command denied to user) while updates, reads and connectivity succeeded; read_only was OFF and no server global had moved, which rules out the read-only lock. Restored with GRANT INSERT ON the site schema to the site account, no restart, no global touched." \
   --service redis-queue \
-  --component redis-queue.config \
-  --mechanism "redis-queue was started with --min-replicas-to-write 1 on a standalone master. With zero replicas the replication guard can never be satisfied, so redis refused every write with NOREPLICAS; reads and PING stayed green while every frappe.enqueue() returned 503. Set min-replicas-to-write back to 0 on svc-redis-queue via reconfigure-infra.sh; did not touch min-replicas-max-lag or the topology."
+  --component redis-queue.acl \
+  --mechanism "Jobs were accepted into redis-queue, but its default user lacked BLPOP, BLMOVE and BRPOP, so the worker received NOPERM and jobs remained Queued. Restored only those dequeue commands durably; did not flush data, scale workers, or alter redis-cache."
 
 echo "[solve] incident report filed (BOTH findings); INSERT privilege restored, queue write guard released."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

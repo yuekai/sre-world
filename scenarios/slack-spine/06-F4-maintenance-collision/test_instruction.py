@@ -5,14 +5,13 @@ import tomllib
 
 import pytest
 import yaml
-from harbor.trial.trial import Trial
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
-from tools.verifier_v2.contract import load_contract
-from tools.verifier_v2.evaluate import _evaluate_safe_repair
-from tools.verifier_v2.evidence import EvidenceStore
+from verifier.contract import load_contract
+from verifier.evaluate import _evaluate_safe_repair
+from verifier.evidence import EvidenceStore
 from loadgen.profile_loader import load_profiles
 from loadgen.schedule import PROFILES
 
@@ -24,7 +23,7 @@ REVIEWER = Path(__file__).with_name("REVIEWER.md")
 MATRIX = Path(__file__).with_name("qualification") / "matrix.yaml"
 CASES = MATRIX.parent / "cases"
 PHASE_ZERO = (
-    REPO_ROOT / "tools/verifier_v2/contracts/06-F4-maintenance-collision.yaml"
+    REPO_ROOT / "verifier/contracts/06-F4-maintenance-collision.yaml"
 )
 TASK_VALUES = (
     REPO_ROOT
@@ -42,12 +41,14 @@ def test_instruction_is_concise_human_and_non_spoiling() -> None:
     folded = " ".join(instruction.lower().split())
     assert len(instruction.splitlines()) == 3
     assert len(instruction.strip().split("\n\n")) == 2
-    assert "file one report" in folded
+    # Ending the session is an explicit lifecycle action; the report is advisory.
+    assert "run `declare_repair_complete`" in folded
+    assert "that ends your session" in folded
     assert "submit_incident_report" in folded
-    assert "the first report is final" in folded
-    assert "report only signals completion" not in folded
-    assert "message delivery and routine maintenance both stay healthy" in folded
-    assert "narrowest durable repair" in folded
+    assert "is optional and does not end the session" in folded
+    assert "the first report is final" not in folded
+    assert "without disabling routine maintenance" in folded
+    assert "message delivery and maintenance both need to stay healthy" in folded
     assert "f4-" not in folded
     assert "60" not in folded
     assert "8-second" not in folded
@@ -147,40 +148,44 @@ def test_task_local_controller_resources_and_readiness_controls_are_generated() 
     assert 'ready_timeout_sec = 600' in TASK_TOML.read_text()
 
 
-def test_real_agent_deadline_and_fast_nop_floor_are_independent(
+def test_agent_window_drives_the_declare_deadline_and_budgets(
     tmp_path: Path,
 ) -> None:
+    """The generator derives the load schedule from the task's agent window.
+
+    The episode clock starts after readiness (POST /grader/episode-start), so
+    the declaration deadline is the agent window plus the substrate's declare
+    grace; Harbor's agent and verifier budgets must outlast it.
+    """
+    from tools import substrate as substrate_mod
+
     spec = yaml.safe_load(SPEC.read_text())
+    metadata = spec["task"]["metadata"]
     generated = yaml.safe_load(TASK_VALUES.read_text())
     task_toml = tomllib.loads(TASK_TOML.read_text())
 
-    profile_name = spec["task"]["metadata"]["profile"]
-    assert profile_name == "maintenance_collision_temporal_1h_agent"
+    profile_name = metadata["profile"]
+    assert profile_name == "maintenance_collision_agent"
     assert generated["loadgen"]["profile"] == profile_name
 
     overlay = tmp_path / "profiles.yaml"
     overlay.write_text(generated["loadgen"]["profilesYaml"])
     profile = load_profiles(overlay, PROFILES)[profile_name]
 
-    ready_budget_s = float(task_toml["environment"]["kwargs"]["ready_timeout_sec"])
-    agent_setup_budget_s = float(Trial._AGENT_SETUP_TIMEOUT_SEC)
-    agent_budget_s = float(task_toml["agent"]["timeout_sec"])
-    boundary_margin_s = 30.0
-    assert ready_budget_s == 600.0
-    assert agent_setup_budget_s == 360.0
-    assert agent_budget_s == 3600.0
-    assert profile.declare_deadline_s >= (
-        ready_budget_s
-        + agent_setup_budget_s
-        + agent_budget_s
-        + boundary_margin_s
+    sub = substrate_mod.load("slack-spine")
+    agent_window_s = metadata["agent_window_s"]
+    assert agent_window_s == 3600.0
+    assert profile.declare_deadline_s == substrate_mod.window_declare_deadline_s(
+        sub, agent_window_s
     )
-    assert profile.effective_undeclared_evidence_min_s() == 150.0
-    assert profile.effective_undeclared_evidence_min_s() < agent_budget_s
+    assert profile.declare_deadline_s == agent_window_s + sub.harbor["declare_grace_s"]
 
-    # One-hour profiles reserve 240s for episode completion and 120s for
-    # post-completion grading. Keep a final 30s outer guard margin as well.
+    agent_budget_s = float(task_toml["agent"]["timeout_sec"])
     verifier_budget_s = float(task_toml["verifier"]["timeout_sec"])
+    assert agent_budget_s == metadata["agent_timeout_sec"]
+    assert verifier_budget_s == metadata["verifier_timeout_sec"]
+    assert agent_budget_s >= profile.declare_deadline_s
+    # Reserve episode completion, post-completion grading and an outer guard.
     assert verifier_budget_s >= profile.declare_deadline_s + 240.0 + 120.0 + 30.0
 
 
@@ -202,7 +207,15 @@ def test_phase_zero_contract_matches_v2_checks_and_matrix() -> None:
     }
     pack_names = {pack["name"] for pack in verification["safe_repair"]["packs"]}
     assert set(phase_zero["public_requirement_ids"]) == requirement_ids
-    assert set(phase_zero["safe_repair_packs"]) == pack_names
+    # The live manifest grades goodput and service health as outcome checks;
+    # the phase-zero contract still lists them as safe-repair packs.
+    outcome_ids = {check["id"] for check in verification["outcome"]["checks"]}
+    promoted_to_outcome = {
+        "correct_goodput": "sustained_correct_goodput",
+        "service_health": "required_services_running",
+    }
+    assert set(promoted_to_outcome.values()) <= outcome_ids
+    assert set(phase_zero["safe_repair_packs"]) - set(promoted_to_outcome) == pack_names
     assert phase_zero["public_contract_coverage"]["missing"] == []
     assert phase_zero["admission"]["status"] == "quarantined_pending_v2_qualification"
     assert set(matrix["cases"]) == {

@@ -1,3 +1,6 @@
+# RECONSTRUCTED 2026-10: values below were brought in line with the Incident
+# Arena task generated from this scenario (tools/arena_backport.py). Comments
+# may still describe the 2026-09-19 version of the fault.
 # TRIGGER + TWO LATENTS. Three real defects behind ONE onset instant: a timed trigger on
 # svc-channel that opens a database code path, the undersized channel pool that path then
 # saturates, and — independently, on the SAME clock — the shared key-value store switched
@@ -68,14 +71,17 @@ task:
     report_vocabulary: true
     profile: "sends_crawl_store_slows"
     episode_ready_gate: true
-    healthcheck_retries: 80
+    healthcheck_retries: 197
     ready_timeout_sec: 600
     # NESTING (R25): verifier 4980 > declare 4590 >= agent 3600. The declaration deadline
     # is EPISODE-relative and the agent budget is AGENT-relative, so the comparison is
     # 3600 + ~150 s bring-up/setup = 3750 against 4590 — ~840 s of slack.
-    agent_timeout_sec: 3600
-    verifier_timeout_sec: 4980
+    agent_timeout_sec: 3930.0
+    verifier_timeout_sec: 4770.0
 
+    agent_window_s: 3600.0
+    soak_s: 180.0
+    build_timeout_sec: 2100.0
 substrate: "slack-spine"
 
 difficulty:
@@ -142,12 +148,18 @@ difficulty:
           sends_crawl_store_slows:
             base: write
             loop: true
-            declare_deadline_s: 4590.0
-            undeclared_evidence_min_s: 150.0
             events:
-              - {kind: admin_event, fire_at_s: 40.0, duration_s: 0.0, event_name: read_consistency_strict, target_service: svc-channel}
-              - {kind: admin_event, fire_at_s: 40.0, duration_s: 0.0, event_name: store_consistency_strict, target_service: svc-auth, event_id: strict_store_auth}
-              - {kind: admin_event, fire_at_s: 60.0, duration_s: 0.0, event_name: read_consistency_strict, target_service: svc-channel, anchor: declaration, event_id: strict_recheck_in_soak}
+            - kind: admin_event
+              fire_at_s: 40.0
+              duration_s: 0.0
+              event_name: read_consistency_strict
+              target_service: svc-channel
+            - kind: admin_event
+              fire_at_s: 40.0
+              duration_s: 0.0
+              event_name: store_consistency_strict
+              target_service: svc-auth
+              event_id: strict_store_auth
 
 # Tier-1 (config) overlay. The pool pair is the only CONFIG-KEY fault: the event
 # is a runtime entry in servicekit's /admin/event registry and contributes

@@ -402,7 +402,7 @@ the resulting authored-file patch to the fork PR explicitly.
 
 ## 8. Images & releases
 
-Custom images live at `ghcr.io/abundant-ai/sre-world/<basename>:<release>`.
+Custom images live at `ghcr.io/yuekai/sre-world/<basename>:<release>` (re-hosted by digest from the original `ghcr.io/abundant-ai/sre-world`).
 The current release tag for each substrate lives in its manifest
 (`substrates/<name>/substrate.yaml`, `images.release`) — that is the source of truth,
 not this page. At time of writing: `slack-spine` → `:v14`, `frappe` → `:v16`.

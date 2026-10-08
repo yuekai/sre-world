@@ -51,8 +51,19 @@ docker build --provenance=false --sbom=false --build-arg BASE=slack-app-builder:
   -f "$ROOT/scenarios/slack-spine/11-BC1-seq-lock-leak-build/layer/appBuilder/Dockerfile" \
   "$ROOT/scenarios/slack-spine/11-BC1-seq-lock-leak-build/layer/appBuilder"
 
+# The config disables kindnet (it drops replies to pods under Ingress
+# NetworkPolicies), so the node cannot go Ready until Calico is installed below.
 kind create cluster --name "$CLUSTER" --image "$KIND_NODE_IMAGE" \
-  --config "$KIND_CONFIG" --wait 120s
+  --config "$KIND_CONFIG"
+# Same sha256-pinned manifest as the trusted Kind environment
+# (tools/run_verifier_v2_matrix.py; docs/plans/2026-10-07-kind-calico.md).
+(cd "$ROOT" && uv run --frozen python -c \
+  'import sys; from tools.run_verifier_v2_matrix import fetch_calico_manifest; sys.stdout.buffer.write(fetch_calico_manifest())') \
+  | kubectl apply -f - >/dev/null || fail "could not install the pinned Calico manifest"
+kubectl -n kube-system rollout status daemonset/calico-node --timeout=600s \
+  || fail "Calico did not become ready"
+kubectl wait --for=condition=Ready node --all --timeout=300s \
+  || fail "Kind node did not become Ready after Calico"
 kind load docker-image --name "$CLUSTER" \
   slack-app:dev slack-app-builder:bc1-kind slack-main:dev slack-loadgen:dev postgres:16
 # Kind's Docker importer assigns digest-only images a shared temporary import
@@ -69,8 +80,6 @@ docker exec "$node" crictl inspecti "$EGRESS_ENVOY_IMAGE" >/dev/null \
   || fail "Kind node lacks pinned Envoy guard image"
 docker exec "$node" crictl inspecti "$COREDNS_IMAGE" >/dev/null \
   || fail "Kind node lacks pinned CoreDNS guard image"
-kubectl -n kube-system rollout status daemonset/kindnet --timeout=180s \
-  || fail "kindnet did not become ready"
 
 # A Docker-network endpoint is outside the Kubernetes pod/service networks and
 # exercises the same direct egress path an agent would use to bypass the proxy.
@@ -443,6 +452,20 @@ in_main sh -ceu '
     grep -q grader_access_forbidden /tmp/grader-denied.json
   done
 '
+
+# Harbor's environment healthcheck pins the episode clock with an authenticated
+# POST before the agent runs; until then the loadgen answers verifier reads with
+# 500 ("episode clock was not pinned"). Do the same, retrying while bring-up
+# finishes, so the read below sees the real verifier view.
+kubectl -n "$NS" exec "$main_pod" -c main -- sh -ceu '
+  token="$(cat /run/verifier/grader-access/token)"
+  deadline=$(( $(date +%s) + 180 ))
+  until curl -fsS -o /dev/null -X POST \
+      -H "X-SRE-World-Grader-Access: $token" http://loadgen:9100/grader/episode-start; do
+    [ "$(date +%s)" -lt "$deadline" ] || exit 1
+    sleep 3
+  done
+' || fail "verifier could not pin the episode clock (POST /grader/episode-start)"
 
 # The verifier runs as root after the agent phase and can retrieve authenticated
 # artifacts, while the agent-facing request above cannot reveal their state.

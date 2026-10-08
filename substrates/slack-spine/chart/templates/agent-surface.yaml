@@ -4,9 +4,11 @@
 {{- fail "SECURITY QUARANTINE: non-confined agent surfaces remain disabled until immutable runtime/builder images and adversarial gates are release-approved." }}
 {{- end }}
 {{- $podNames := list }}
+{{- $podComponents := list }}
 {{- range $role, $_ := .Values.app.roles }}
 {{- if include "slack.enabled" (dict "root" $ "key" $role) }}
 {{- $podNames = append $podNames (printf "svc-%s-0" $role) }}
+{{- $podComponents = append $podComponents (printf "svc-%s" $role) }}
 {{- end }}
 {{- end }}
 # Exact-name shell access. Kubernetes authorizes pods/exec against the parent
@@ -44,6 +46,39 @@ roleRef:
   kind: Role
   name: main-app-exec
   apiGroup: rbac.authorization.k8s.io
+---
+# Every pod reachable through pods/exec is namespace-confined. It may talk to
+# the SUT and kube-dns, but not public IPs or either task-owned egress stage.
+# This closes the direct-shell bypass while preserving normal service traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-reachable-app-egress
+  labels:
+    {{- include "slack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: main
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: {{ $podComponents | toJson }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: NotIn
+                values: [agent-egress-proxy, agent-egress-tls-gateway, agent-kube-api-proxy]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
 ---
 {{- end }}
 {{- if $sfc.buildCapable.enabled }}

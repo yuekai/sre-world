@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import subprocess
@@ -297,7 +299,7 @@ def test_host_v2_mode_adds_trusted_adapter_without_image_overrides(
         substrate="slack-spine",
     )
     index = command.index("--verifier-import-path")
-    assert command[index + 1] == "tools.verifier_v2.host:SlackSpineV2Verifier"
+    assert command[index + 1] == "verifier.host:SlackSpineV2Verifier"
     assert "--ek" not in command
     assert str(Path(__file__).resolve().parent.parent) in env["PYTHONPATH"]
     assert "substrates/slack-spine/verifier" in env["PYTHONPATH"]
@@ -329,7 +331,7 @@ def test_host_v2_mode_resolves_vendored_oracle_from_clean_cwd(
             (
                 "from pathlib import Path; "
                 "from types import SimpleNamespace; "
-                "from tools.verifier_v2.host import SlackSpineV2Verifier; "
+                "from verifier.host import SlackSpineV2Verifier; "
                 "verifier = object.__new__(SlackSpineV2Verifier); "
                 "verifier.environment = SimpleNamespace("
                 "_chart_path='chart', "
@@ -361,6 +363,64 @@ def test_slack_matrix_kind_launcher_pins_hosted_service_subnet(tmp_path: Path) -
             / "substrates/slack-spine/checks/kind_surface_config.yaml"
         ),
     ]
+    # No CNI until the environment installs Calico, so the node cannot go Ready
+    # inside kind's own wait.
+    assert "--wait" not in command
+
+
+@pytest.mark.asyncio
+async def test_kind_environment_installs_pinned_calico(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object.__new__(matrix_module.SlackSpineKindHelmEnvironment)
+    body = b"kind: List\n"
+    monkeypatch.setattr(
+        matrix_module, "_CALICO_MANIFEST_SHA256", hashlib.sha256(body).hexdigest()
+    )
+    monkeypatch.setattr(
+        matrix_module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(body),
+    )
+    staged: list[bytes] = []
+
+    async def stage(source, _host_path):
+        staged.append(Path(source).read_bytes())
+
+    commands: list[list[str]] = []
+
+    async def run_host(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(return_code=0, stdout="", stderr=None)
+
+    environment._stage_file_to_host = stage
+    environment._run_host = run_host
+    await environment._install_calico()
+
+    assert staged == [body]
+    assert commands[0][:3] == ["kubectl", "apply", "-f"]
+    assert any("daemonset/calico-node" in command for command in commands)
+    assert commands[-1][:3] == ["kubectl", "wait", "--for=condition=Ready"]
+
+
+@pytest.mark.asyncio
+async def test_kind_environment_rejects_moved_calico_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object.__new__(matrix_module.SlackSpineKindHelmEnvironment)
+    monkeypatch.setattr(
+        matrix_module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(b"tampered\n"),
+    )
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("nothing may reach the cluster")
+
+    environment._stage_file_to_host = unexpected
+    environment._run_host = unexpected
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        await environment._install_calico()
 
 
 def test_slack_matrix_rejects_dns_ip_outside_trusted_service_subnet(
@@ -600,7 +660,7 @@ def test_local_run_uses_trusted_slack_kind_environment(
     environment_index = command.index("-e")
     assert command[environment_index + 1].endswith(":SlackSpineKindHelmEnvironment")
     assert command[command.index("--verifier-import-path") + 1] == (
-        "tools.verifier_v2.host:SlackSpineV2Verifier"
+        "verifier.host:SlackSpineV2Verifier"
     )
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(local_run.REPO_ROOT)
 
@@ -814,7 +874,7 @@ def test_offline_regrade_compares_fresh_detailed_verdict(
                 _restore_matrix_artifacts(regrade_dir, rundir),
                 drifted,
             )[1],
-            "verifier_v2.evaluate",
+            "verifier.evaluate",
         ),
     )
 
@@ -884,7 +944,7 @@ def test_offline_regrade_uses_copy_and_preserves_captured_artifacts(
     monkeypatch.setattr(
         matrix_module,
         "_load_shipped_evaluator",
-        lambda _gt: (fake_evaluate, "verifier_v2.evaluate"),
+        lambda _gt: (fake_evaluate, "verifier.evaluate"),
     )
 
     _validate_case_artifacts(
@@ -940,7 +1000,7 @@ def test_offline_regrade_rejects_regenerated_artifact_drift_without_mutating_cap
     monkeypatch.setattr(
         matrix_module,
         "_load_shipped_evaluator",
-        lambda _gt: (drift, "verifier_v2.evaluate"),
+        lambda _gt: (drift, "verifier.evaluate"),
     )
 
     with pytest.raises(SystemExit, match=f"regenerated {artifact} does not equal"):
@@ -982,7 +1042,7 @@ def test_offline_regrade_rejects_missing_regenerated_artifact(
     monkeypatch.setattr(
         matrix_module,
         "_load_shipped_evaluator",
-        lambda _gt: (omit_assessment, "verifier_v2.evaluate"),
+        lambda _gt: (omit_assessment, "verifier.evaluate"),
     )
 
     with pytest.raises(SystemExit, match="did not regenerate required artifact"):

@@ -10,7 +10,7 @@ do to ship a scenario.
 
 Companion files: [`TASK-QUALITY-CRITERIA.md`](TASK-QUALITY-CRITERIA.md) (33 criteria traced
 to paper sections), [`../TASK-QUALITY-RUBRIC.md`](../TASK-QUALITY-RUBRIC.md) (the scored
-subset), [`../TASK-QUALITY-IMPROVEMENTS.md`](../TASK-QUALITY-IMPROVEMENTS.md) (pipeline
+subset), [`../TASK-QUALITY-IMPROVEMENTS.md`](../archive/TASK-QUALITY-IMPROVEMENTS.md) (pipeline
 gaps), [`../KILL-LEDGER.md`](../KILL-LEDGER.md) (our refuted candidates).
 
 ---

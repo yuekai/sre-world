@@ -35,7 +35,7 @@ def _fake_local_run(rewards_nop: dict, rewards_oracle: dict):
 
 
 def test_probe_passes_when_nop_fails_and_oracle_passes(tmp_path) -> None:
-    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "03-F1-connection-cap"
+    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "07-desk-and-queue-outage"
     out_dir = tmp_path / "jobs"
 
     with patch("tools.scenario_pipeline.probe.subprocess.run",
@@ -55,7 +55,7 @@ def test_probe_passes_when_nop_fails_and_oracle_passes(tmp_path) -> None:
 
 def test_probe_reports_fault_not_firing(tmp_path) -> None:
     """Nop leg passed = fault didn't fire = record parameter too permissive."""
-    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "03-F1-connection-cap"
+    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "07-desk-and-queue-outage"
     out_dir = tmp_path / "jobs"
 
     with patch("tools.scenario_pipeline.probe.subprocess.run",
@@ -72,7 +72,7 @@ def test_probe_reports_fault_not_firing(tmp_path) -> None:
 
 def test_probe_reports_broken_solve(tmp_path) -> None:
     """Oracle leg reward != 1 = reference fix is broken."""
-    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "03-F1-connection-cap"
+    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "07-desk-and-queue-outage"
     out_dir = tmp_path / "jobs"
 
     with patch("tools.scenario_pipeline.probe.subprocess.run",
@@ -94,7 +94,7 @@ def test_probe_raises_when_task_missing(tmp_path) -> None:
 
 
 def test_probe_raises_when_no_trial_dir(tmp_path) -> None:
-    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "03-F1-connection-cap"
+    task = probe_mod.REPO_ROOT / "tasks" / "frappe" / "07-desk-and-queue-outage"
     out_dir = tmp_path / "jobs"
 
     def _no_trial(argv, **kwargs):

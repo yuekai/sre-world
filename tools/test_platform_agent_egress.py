@@ -13,7 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 TASKS = (
     ROOT / "tasks/slack-spine/00-BASE-health",
-    ROOT / "tasks/frappe/03-F1-connection-cap",
+    ROOT / "tasks/frappe/07-desk-and-queue-outage",
 )
 
 
@@ -55,28 +55,24 @@ def test_all_current_substrates_declare_the_platform_boundary() -> None:
         assert data["harbor"]["agent_setup_egress_boundary"] is True, manifest
 
 
-def test_generated_tasks_wrap_setup_and_explain_public_environment() -> None:
+def test_generated_tasks_confine_from_pod_start_and_explain_public_environment() -> None:
+    """Agent egress is confined by the task-owned proxy from pod start: no agent
+    setup hooks flip the phase, and Oddish is handed the runtime allowlist."""
     for task in TASKS:
         config = tomllib.loads((task / "task.toml").read_text())
         assert config["environment"]["network_mode"] == "public"
-        assert (
-            "trusted harness installation"
-            in config["metadata"]["open_internet_justification"]
+        justification = config["metadata"]["open_internet_justification"]
+        assert "trusted harness installation" in justification
+        assert "task-owned egress proxy confines the agent" in justification
+        assert "setup_begin" not in config["agent"]
+        assert "setup_complete" not in config["agent"]
+        values = yaml.safe_load((task / "environment/chart/values.yaml").read_text())
+        assert config["metadata"]["oddish_agent_egress_allowed_hosts"] == (
+            values["agentEgressProxy"]["allowedHosts"]
         )
-        assert config["agent"]["setup_begin"] == [
-            {
-                "command": "/usr/local/bin/set-agent-egress-phase bootstrap",
-                "timeout_sec": 150.0,
-                "user": "root",
-            }
-        ]
-        assert config["agent"]["setup_complete"] == [
-            {
-                "command": "/usr/local/bin/set-agent-egress-phase runtime",
-                "timeout_sec": 150.0,
-                "user": "root",
-            }
-        ]
+        assert (task / "environment/chart/.oddish-agent-egress-hosts").read_text() == (
+            "agentEgressProxy.runtimeAllowedHosts\n"
+        )
 
 
 def test_every_substrate_starts_restricted_and_has_public_setup_only() -> None:

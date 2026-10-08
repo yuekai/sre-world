@@ -4,3 +4,8 @@ networking:
   # Match hosted k3s so the task-owned DNS Service uses one explicit address in
   # both qualification environments.
   serviceSubnet: 10.43.0.0/16
+  podSubnet: 10.42.0.0/16
+  # kindnet drops replies to pods under an Ingress NetworkPolicy, which breaks
+  # DNS for the chart's policed pods. SlackSpineKindHelmEnvironment installs
+  # Calico instead.
+  disableDefaultCNI: true

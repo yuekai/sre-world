@@ -44,6 +44,9 @@ GENERATED_CHART_FILES = {
     "ground-truth.yaml",
     "config-before.json",
 }
+# Generator-written, but only for egress-confined tasks (it names the values key
+# Oddish reads the agent's egress allowlist from), so tolerated, never required.
+OPTIONAL_GENERATED_CHART_FILES = {".oddish-agent-egress-hosts"}
 
 
 def _is_python_cache(path: Path) -> bool:
@@ -157,7 +160,9 @@ def check_task(sub: Substrate, task_dir: Path) -> list[str]:
 
     for rel in sorted(expected_names - copy_files):
         problems.append(f"missing from task copy: {rel}")
-    for rel in sorted(copy_files - expected_names - GENERATED_CHART_FILES):
+    for rel in sorted(
+        copy_files - expected_names - GENERATED_CHART_FILES - OPTIONAL_GENERATED_CHART_FILES
+    ):
         problems.append(f"extra file in task copy: {rel}")
     for rel in sorted(GENERATED_CHART_FILES - copy_files):
         problems.append(f"missing generated grader payload: {rel}")

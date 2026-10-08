@@ -89,6 +89,39 @@ spec:
       # and immutable dispatchers before the foothold starts. Real agents only
       # see the generic dispatcher; no golden directory is uploaded for them.
       initContainers:
+        {{- if .Values.platformTools.enabled }}
+        {{- $toolsImage := printf "ghcr.io/yuekai/sre-world/codex-tools@%s" .Values.platformTools.digest }}
+        {{- if and (ne .Values.global.imagePullPolicy "Never") (ne $toolsImage .Values.platformTools.image) }}
+        {{- fail "hosted platformTools.image must exactly equal the locked ghcr.io/yuekai/sre-world/codex-tools@digest identity" }}
+        {{- end }}
+        - name: codex-tools
+          image: {{ required "platformTools.image is required" .Values.platformTools.image | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              cp -R /opt/harbor-agent-tools/. /staged-tools/
+              chmod -R a+rX /staged-tools
+              export PATH=/staged-tools/bin:/usr/local/bin:/usr/bin:/bin
+              command -v curl >/dev/null
+              command -v rg >/dev/null
+              command -v codex >/dev/null
+              codex --version
+              rg --version >/dev/null
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: codex-tools
+              mountPath: /staged-tools
+            - name: codex-tools-no-service-account
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+        {{- end }}
         - name: main-permissions
           image: {{ .Values.images.main | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
@@ -188,6 +221,10 @@ spec:
               drop: ["ALL"]
               add: ["CHOWN", "FOWNER", "SETUID", "SETGID"]
           env:
+            {{- if .Values.platformTools.enabled }}
+            - name: PATH
+              value: "/opt/harbor-agent-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            {{- end }}
             # Never preserve the host runner's uid/gid during kubectl cp into
             # this capability-dropped container.
             - name: TAR_OPTIONS
@@ -224,6 +261,11 @@ spec:
           resources:
             {{- toYaml .Values.main.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.platformTools.enabled }}
+            - name: codex-tools
+              mountPath: /opt/harbor-agent-tools
+              readOnly: true
+            {{- end }}
             - {name: tmp, mountPath: /tmp}
             - {name: agent-home, mountPath: /home/agent}
             - {name: tests, mountPath: /tests}
@@ -262,6 +304,10 @@ spec:
           env:
             - name: GRADER_ACCESS_TOKEN_FILE
               value: /run/grader-access/token
+            # Compatibility with already-published main images: disable their
+            # retired uid-observation opener. The Harbor healthcheck owns t0.
+            - name: EPISODE_START_ENABLED
+              value: "0"
           ports:
             - name: freeze
               containerPort: 9101
@@ -298,6 +344,12 @@ spec:
               mountPath: /run/verifier-broker
         {{- end }}
       volumes:
+        {{- if .Values.platformTools.enabled }}
+        - name: codex-tools
+          emptyDir: {}
+        - name: codex-tools-no-service-account
+          emptyDir: {}
+        {{- end }}
         - {name: tmp, emptyDir: {}}
         - {name: agent-home, emptyDir: {}}
         - {name: tests, emptyDir: {}}

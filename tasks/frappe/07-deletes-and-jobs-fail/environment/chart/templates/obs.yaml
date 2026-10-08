@@ -39,6 +39,12 @@ data:
           - {targets: ["svc-frappe-worker-long:8000"],     labels: {service: frappe-worker-long}}
           - {targets: ["svc-frappe-scheduler:8000"],       labels: {service: frappe-scheduler}}
           - {targets: ["svc-frappe-socketio:8000"],        labels: {service: frappe-socketio}}
+      # The standalone frappe-admin service owns /metrics for RQ queue depth
+      # (rq_queue_depth{queue}) and sidecar liveness. Without this target the
+      # loadgen's metrics.jsonl recorded rq_queue_depth as {} in every episode.
+      - job_name: frappe-admin
+        static_configs:
+          - {targets: ["frappe-admin:8000"], labels: {service: frappe-admin}}
       - job_name: mysqld-exporter
         static_configs:
           - {targets: ["mysqld-exporter:9104"], labels: {service: mariadb}}

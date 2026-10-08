@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from oracle.source_attestation import (
+from verifier.oracle.source_attestation import (
     AttestationError,
     SourceNotBuilt,
     canonical_tree_digest,

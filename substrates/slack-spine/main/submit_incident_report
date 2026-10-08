@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# submit_incident_report — the agent's "declare" action, run inside the `main` pod.
+# submit_incident_report — record what you found, run inside the `main` pod.
 #
-# Builds the incident report and POSTs it to the loadgen declare endpoint:
+# Builds the incident report and POSTs it to the loadgen advisory report endpoint:
 #
-#       POST http://loadgen:9100/declare    {"findings":[ {...}, ... ]}
+#       POST http://loadgen:9100/report    {"findings":[ {...}, ... ]}
 #
+# ADVISORY ONLY. Filing a report does NOT end the episode, does NOT freeze the
+# system, and does NOT affect scoring. It is where you record what you found and
+# why, for whoever reads this trajectory later. When the repair itself is done,
+# run `declare_repair_complete` — that is the only command that ends an episode.
+# You may file a report and keep working, file one after declaring, or never file
+# one at all; the score is identical.
 # An incident may have ONE OR MORE root-cause findings. Report them in EITHER of
 # two ways (pick whichever is convenient — the resulting report is identical):
 #
@@ -37,7 +43,7 @@
 set -euo pipefail
 
 PROG="submit_incident_report"
-DECLARE_URL="${DECLARE_URL:-http://loadgen:9100/declare}"
+REPORT_URL="${REPORT_URL:-http://loadgen:9100/report}"
 REPORT_VOCABULARY_FILE="${REPORT_VOCABULARY_FILE:-}"
 
 die() { echo "[$PROG] FATAL: $*" >&2; exit 1; }
@@ -200,19 +206,18 @@ fi
 # ---- final well-formedness guard on the assembled envelope -----------------------
 _json_wellformed "$BODY" || die "assembled report is not well-formed JSON: ${BODY}"
 
-# ---- POST to the loadgen declare endpoint ---------------------------------------
-echo "[$PROG] POST ${DECLARE_URL}" >&2
+# ---- POST to the loadgen advisory report endpoint ---------------------------------------
+echo "[$PROG] POST ${REPORT_URL}" >&2
 code="$(curl -sS -o /tmp/submit_incident_report.out -w '%{http_code}' \
-    -X POST "${DECLARE_URL}" \
+    -X POST "${REPORT_URL}" \
     -H 'Content-Type: application/json' \
     --data "${BODY}")" \
-    || die "POST ${DECLARE_URL} failed (connection error — is the loadgen pod reachable?)"
+    || die "POST ${REPORT_URL} failed (connection error — is the loadgen pod reachable?)"
 
 case "$code" in
-    2*) if grep -Eq '"already_declared"[[:space:]]*:[[:space:]]*true' /tmp/submit_incident_report.out; then
-            die "incident report was ignored because a report was already declared: $(cat /tmp/submit_incident_report.out)"
-        fi
-        echo "[$PROG] incident report accepted (HTTP ${code}): $(cat /tmp/submit_incident_report.out)" >&2
+    2*) echo "[$PROG] incident report recorded (HTTP ${code}): $(cat /tmp/submit_incident_report.out)" >&2
+        echo "[$PROG] this did NOT end the episode. Run declare_repair_complete when the repair is done." >&2
         echo "OK" ;;
-    *)  die "POST ${DECLARE_URL} returned HTTP ${code}: $(cat /tmp/submit_incident_report.out)" ;;
+    409) die "an incident report was already filed and is kept; this one changed nothing: $(cat /tmp/submit_incident_report.out)" ;;
+    *)  die "POST ${REPORT_URL} returned HTTP ${code}: $(cat /tmp/submit_incident_report.out)" ;;
 esac

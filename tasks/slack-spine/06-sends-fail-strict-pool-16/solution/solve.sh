@@ -39,12 +39,30 @@ set -euo pipefail
 CHAN_BASE="http://svc-channel:8000"
 MSG_BASE="http://svc-message:8000"
 EVENT_WAIT_S=120
+ADMIN_WAIT_S=60
+
+# The environment healthcheck proves svc-message once before episode-start. The
+# write load starts immediately afterward, so a service can be between transient
+# startup restarts when the oracle begins. These reads are diagnostic only; retry
+# them instead of letting one connect race abort the actual repair.
+read_admin_config() {
+  local base="$1"
+  local deadline=$((SECONDS + ADMIN_WAIT_S))
+  local body=""
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    if body="$(curl -fsS -m 3 "${base}/admin/config" 2>/dev/null)"; then
+      printf '%s\n' "${body}"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "[solve] FATAL: ${base}/admin/config stayed unreachable for ${ADMIN_WAIT_S}s" >&2
+  return 1
+}
 
 echo "[solve] db pool config before (channel vs a peer role — 16/4 against 20/10):"
-curl -fsS "${CHAN_BASE}/admin/config"
-echo
-curl -fsS "${MSG_BASE}/admin/config"
-echo
+read_admin_config "${CHAN_BASE}"
+read_admin_config "${MSG_BASE}"
 echo "[solve] runtime event state on svc-channel (the event set does NOT appear in"
 echo "        /admin/config above; read_consistency_strict lands at t=40 s):"
 curl -fsS "${CHAN_BASE}/admin/event"
@@ -107,3 +125,7 @@ submit_incident_report <<'JSON'
 JSON
 
 echo "[solve] incident report filed; runtime toggle reverted, channel pool restored."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

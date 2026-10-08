@@ -34,9 +34,9 @@ from tools import substrate as substrate_mod  # noqa: E402
 SUB = substrate_mod.load("frappe")
 FV = SUB.load_fault_validators()
 
-# The one shipped Frappe task. Its overlay is read from the spec rather than
-# hand-copied, so a spec edit that the validator would reject surfaces here.
-_SPEC_03F1 = _REPO / "scenarios" / "frappe" / "03-F1-connection-cap" / "spec.yaml"
+# The shipped Frappe scenarios. Their overlays are read from the specs rather
+# than hand-copied, so a spec edit that the validator would reject surfaces here.
+_SHIPPED_SPECS = sorted((_REPO / "scenarios" / "frappe").glob("*/spec.yaml"))
 
 PID_FILE = "/opt/bitnami/mariadb/tmp/mysqld.pid"
 
@@ -79,14 +79,26 @@ def _runtime_spec(*, variable: str = "read_only", value: object = True) -> dict:
     )
 
 
-# --- the shipped task: its validation must not move ---------------------------
+# --- the shipped tasks: their validation must not move -------------------------
 
 
-def test_03f1_real_spec_still_validates():
-    """Regression guard: the one shipped Frappe task's actual overlay."""
-    spec = yaml.safe_load(_SPEC_03F1.read_text(encoding="utf-8"))
-    assert spec["fault"]["tier"] == "config"
-    FV.validate_config_tier(spec, SUB)
+@pytest.mark.parametrize(
+    "spec_path", _SHIPPED_SPECS, ids=[path.parent.name for path in _SHIPPED_SPECS]
+)
+def test_shipped_specs_still_validate(spec_path):
+    """Regression guard: every shipped Frappe scenario's actual overlay."""
+    spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    tier = spec["fault"]["tier"]
+    validators = {
+        "config": FV.validate_config_tier,
+        "runtime": FV.validate_runtime_tier,
+    }
+    assert tier in validators, tier
+    validators[tier](spec, SUB)
+
+
+def test_shipped_specs_are_discovered():
+    assert len(_SHIPPED_SPECS) > 1
 
 
 # --- mariadb family -----------------------------------------------------------
@@ -156,8 +168,8 @@ def test_malformed_ini_still_raises_from_the_shared_parser():
     A structurally malformed blob (a line outside any section) is rejected by
     ``grader_hooks.mariadb_cnf_to_config_dict`` itself, which raises RuntimeError
     rather than routing through ``_die``. Generation still fails loudly, but with
-    a traceback instead of a named SystemExit. Wrapping it would change 03-F1's
-    validation path, so it is asserted as-is; tightening it is a separate change.
+    a traceback instead of a named SystemExit. Wrapping it would change the config
+    tier's validation path, so it is asserted as-is; tightening it is a separate change.
     """
     with pytest.raises(RuntimeError, match="outside any section"):
         FV.validate_config_tier(_spec(_cnf("max_connections=25")), SUB)
@@ -433,8 +445,7 @@ def test_runtime_validator_is_inert_on_other_tiers(tier):
 # RETURNS EARLY when it is absent — so dropping it disables fault-capability
 # enforcement with no error anywhere. tools/test_generate_tasks_capabilities.py
 # exercises the generic mechanism against a stub module, never this substrate's
-# real export, and 03-F1 is config-tier (so it resolves to []) — which leaves
-# these the only tests that would notice.
+# real export — which leaves these the only tests that would notice.
 
 
 def test_required_fault_capabilities_is_exported():

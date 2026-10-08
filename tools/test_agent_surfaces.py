@@ -61,18 +61,13 @@ def test_confined_keeps_app_deployments_and_emits_no_surface_objects() -> None:
         "caa5b411be1633b90023592a34a7e010c933d6e60206c758f631485e53006865"
     )
     assert proxy_container["imagePullPolicy"] == "IfNotPresent"
-    expected_hosts = [
-        "archive.ubuntu.com",
-        "security.ubuntu.com",
-        "downloads.claude.ai",
-        "api.openai.com",
-        "ab.chatgpt.com",
-        "x.ai",
-        "api.fireworks.ai",
-        "api.x.ai",
-        "api.anthropic.com",
-        "mcp-proxy.anthropic.com",
-    ]
+    # The runtime allowlist is exactly the chart's agentEgressProxy.allowedHosts.
+    expected_hosts = yaml.safe_load((CHART / "values.yaml").read_text())[
+        "agentEgressProxy"
+    ]["allowedHosts"]
+    assert {"api.anthropic.com", "api.openai.com", "downloads.claude.ai"} <= set(
+        expected_hosts
+    )
     proxy_config_data = _find(docs, "ConfigMap", "agent-egress-proxy-config")["data"]
     runtime_proxy_config = yaml.safe_load(proxy_config_data["runtime-envoy.yaml"])
     bootstrap_proxy_config = yaml.safe_load(proxy_config_data["bootstrap-envoy.yaml"])
@@ -340,7 +335,7 @@ def test_verifier_v2_evidence_is_grader_owned_persistent_and_recreate_safe() -> 
     )
     assert legacy_grader == {"name": "grader", "emptyDir": {}}
 
-    docs = _render("gradingHarness.verifierV2Evidence.persistent=true")
+    docs = _render("gradingHarness.verifierEvidence.persistent=true")
     claim = _find(docs, "PersistentVolumeClaim", "loadgen-grader-evidence")
     assert claim["spec"]["accessModes"] == ["ReadWriteOnce"]
     assert claim["spec"]["resources"]["requests"]["storage"] == "256Mi"
@@ -355,9 +350,9 @@ def test_verifier_v2_evidence_is_grader_owned_persistent_and_recreate_safe() -> 
     command = pod["containers"][0]
     assert command["command"] == [
         "python3",
-        "/opt/verifier-v2-evidence/entrypoint.py",
+        "/opt/verifier-evidence/entrypoint.py",
     ]
-    entrypoint = _find(docs, "ConfigMap", "verifier-v2-evidence-entrypoint")
+    entrypoint = _find(docs, "ConfigMap", "verifier-evidence-entrypoint")
     assert "InfrastructureEvidenceRestart" in entrypoint["data"]["entrypoint.py"]
     main = _find(docs, "Deployment", "main")
     assert all(
@@ -371,10 +366,10 @@ def test_shell_visible_uses_stable_exact_named_exec_only() -> None:
     docs = _render(
         "agentSurface.releaseApproved=true", "agentSurface.exec.enabled=true"
     )
-    assert not any(doc.get("kind") == "NetworkPolicy" for doc in docs)
-    assert not any(
-        (doc.get("metadata") or {}).get("name") == "agent-egress-proxy" for doc in docs
-    )
+    # Exec surfaces keep the confined egress stack and additionally confine
+    # every exec-reachable app pod away from the egress stages.
+    assert _find(docs, "Deployment", "agent-egress-proxy")
+    assert _find(docs, "NetworkPolicy", "main-egress")
     statefulsets = {
         doc["metadata"]["name"]
         for doc in docs
@@ -383,6 +378,17 @@ def test_shell_visible_uses_stable_exact_named_exec_only() -> None:
     }
     role = _find(docs, "Role", "main-app-exec")
     expected = sorted(f"{name}-0" for name in statefulsets)
+    app_egress = _find(docs, "NetworkPolicy", "agent-reachable-app-egress")
+    assert sorted(
+        app_egress["spec"]["podSelector"]["matchExpressions"][0]["values"]
+    ) == sorted(statefulsets)
+    assert app_egress["spec"]["egress"][0]["to"][0]["podSelector"][
+        "matchExpressions"
+    ][0]["values"] == [
+        "agent-egress-proxy",
+        "agent-egress-tls-gateway",
+        "agent-kube-api-proxy",
+    ]
     assert role["rules"] == [
         {
             "apiGroups": [""],
@@ -497,7 +503,8 @@ def test_build_capable_uses_builder_broker_and_separate_runtime() -> None:
         "agentSurface.buildCapable.targetRole=message",
         "agentSurface.buildCapable.sourcePaths[0]=services/app/src/roles/message.ts",
     )
-    assert not any(doc.get("kind") == "NetworkPolicy" for doc in docs)
+    assert _find(docs, "NetworkPolicy", "main-egress")
+    assert _find(docs, "NetworkPolicy", "agent-reachable-app-egress")
     target = _find(docs, "StatefulSet", "svc-message")
     pod = target["spec"]["template"]["spec"]
     init = next(
@@ -508,8 +515,17 @@ def test_build_capable_uses_builder_broker_and_separate_runtime() -> None:
     app = next(item for item in pod["containers"] if item["name"] == "app")
     assert {m["mountPath"] for m in app["volumeMounts"]} >= {"/runtime", "/tmp"}
     assert "/src" not in {m["mountPath"] for m in app["volumeMounts"]}
-    editor = next(item for item in pod["containers"] if item["name"] == "source-editor")
+    # The source editor is a restartable init sidecar, ordered after source
+    # normalization and before trusted-build, so a failed compile stays editable.
+    init_names = [item["name"] for item in pod["initContainers"]]
+    assert init_names.index("source-seed") < init_names.index("source-editor")
+    assert init_names.index("source-editor") < init_names.index("trusted-build")
+    editor = next(
+        item for item in pod["initContainers"] if item["name"] == "source-editor"
+    )
+    assert editor["restartPolicy"] == "Always"
     assert editor["volumeMounts"] == [{"name": "source", "mountPath": "/src"}]
+    assert all(item["name"] != "source-editor" for item in pod["containers"])
     broker = _find(docs, "Role", "rebuild-broker-message")
     assert broker["rules"] == [
         {
@@ -587,6 +603,7 @@ def test_build_source_paths_reject_escape() -> None:
 def _surfaces_sub():
     return SimpleNamespace(
         name="slack-spine",
+        chart_dir=CHART,
         harbor={
             "task_name_prefix": "sre-world/slack-spine-",
             "scenario_prefix": "slack-spine/",
@@ -643,6 +660,7 @@ def test_release_name_gates_reject_frappe_landmines() -> None:
     33118230593 with perfect separation: release 33 boots, 34 and 35 do not."""
     sub = _surfaces_sub()
     sub.name = "frappe"
+    sub.chart_dir = FRAPPE_CHART
     sub.harbor["task_name_prefix"] = "sre-world/frappe-"
     sub.harbor["scenario_prefix"] = "frappe/"
     spec = _surfaces_spec()
@@ -705,16 +723,24 @@ def test_generated_users_and_agent_workdir_are_explicit() -> None:
     rendered = generate_tasks._render_task_toml(spec, sub, "confined")
     assert 'workdir = "/home/agent"' in rendered
     assert "open_internet_justification" in rendered
-    assert "restores restricted egress before any agent command" in rendered
+    assert "task-owned egress proxy confines the agent" in rendered
     assert '[agent]\nuser = "agent"' in rendered
-    assert "[[agent.setup_begin]]" in rendered
-    assert "[[agent.setup_complete]]" in rendered
-    assert 'command = "/usr/local/bin/set-agent-egress-phase bootstrap"' in rendered
-    assert 'command = "/usr/local/bin/set-agent-egress-phase runtime"' in rendered
-    assert 'user = "root"' in rendered
+    # Egress is confined from pod start; no agent setup phase hooks are emitted.
+    assert "[[agent.setup_begin]]" not in rendered
+    assert "[[agent.setup_complete]]" not in rendered
+    assert "set-agent-egress-phase" not in rendered
+    parsed = tomllib.loads(rendered)
+    assert parsed["metadata"]["oddish_agent_egress_allowed_hosts"] == yaml.safe_load(
+        (CHART / "values.yaml").read_text()
+    )["agentEgressProxy"]["allowedHosts"]
+    # Readiness is wrapped, then the grader is told the episode started.
+    assert parsed["environment"]["healthcheck"]["command"] == (
+        "(curl -fsS svc-message:8000/healthz) && curl -fsS -X POST -H "
+        '"X-SRE-World-Grader-Access: $(cat /run/verifier/grader-access/token)" '
+        "http://loadgen:9100/grader/episode-start >/dev/null"
+    )
     assert 'environment_mode = "shared"\nuser = "root"' in rendered
     assert 'GRADER_ACCESS_TOKEN_FILE = "/run/verifier/grader-access/token"' in rendered
-    assert 'command = "curl -fsS svc-message:8000/healthz"' in rendered
     graph_command = (
         "curl -X POST -H 'Content-Type: application/json' "
         "-d '{\"query\":\"{ shop { name } }\"}' http://saleor/graphql/ "
@@ -722,7 +748,9 @@ def test_generated_users_and_agent_workdir_are_explicit() -> None:
     )
     sub.harbor["healthcheck"]["command"] = graph_command
     graph_rendered = generate_tasks._render_task_toml(spec, sub, "confined")
-    assert tomllib.loads(graph_rendered)["environment"]["healthcheck"]["command"] == graph_command
+    assert tomllib.loads(graph_rendered)["environment"]["healthcheck"][
+        "command"
+    ].startswith(f"({graph_command}) && ")
     sub.harbor["healthcheck"]["command"] = "curl -fsS svc-message:8000/healthz"
     with pytest.raises(SystemExit, match="cannot be eval_ready"):
         generate_tasks._render_task_toml(spec, sub, "build-capable")
@@ -1242,15 +1270,15 @@ def test_p1_task_stamp_selects_only_the_opt_in_oracle(
     verification = manifest.get("verification") if isinstance(manifest, dict) else None
     test_sh = (dest / "tests/test.sh").read_text()
     if isinstance(verification, dict) and verification.get("version") == 2:
-        assert "python3 -m verifier_v2.evaluate" in test_sh
-        assert (dest / "tests/verifier_v2/evaluate.py").is_file()
+        assert "python3 -m verifier.evaluate" in test_sh
+        assert (dest / "tests/verifier/evaluate.py").is_file()
         assert not (dest / "tests/oracle_p1").exists()
     else:
         assert "python3 -m oracle_p1.evaluate" in test_sh
         assert (dest / "tests/oracle_p1/evaluate.py").is_file()
         assert (dest / "tests/oracle_p1/runtime_state.py").is_file()
         assert (dest / "tests/oracle_p1/intervention_state.py").is_file()
-        assert not (dest / "tests/verifier_v2").exists()
+        assert not (dest / "tests/verifier").exists()
 
 
 def test_task_generation_ignores_host_python_bytecode_in_chart_copy(

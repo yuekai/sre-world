@@ -468,8 +468,8 @@ def _fingerprints(state: State, manifests: dict[str, dict[str, Any]], sub: str, 
     verifier_root = "verifier"
     selected_v2: set[str] | None = None
     if is_v2:
-        from tools.verifier_v2.closure import selected_fingerprint_relpaths
-        from tools.verifier_v2.contract import load_contract
+        from verifier.closure import selected_fingerprint_relpaths
+        from verifier.contract import load_contract
 
         selected_v2 = set(selected_fingerprint_relpaths(load_contract(gt)))
         missing_selected = sorted(
@@ -478,12 +478,6 @@ def _fingerprints(state: State, manifests: dict[str, dict[str, Any]], sub: str, 
         if missing_selected:
             _die(f"selected v2 grader files are missing: {missing_selected}")
     selected_dependencies: list[tuple[str, bytes]] = []
-    if is_v2 and "legacy_outcome" in verification.get("materializers", []):
-        dependency_path = "verifier/oracle/outcome.py"
-        dependency_raw = state.read_bytes(dependency_path)
-        if dependency_raw is None:
-            _die(f"selected v2 grader dependency is missing: {dependency_path}")
-        selected_dependencies.append((dependency_path, dependency_raw))
     grader = _hash_items(
         [("ground-truth", json.dumps(grader_doc, sort_keys=True, default=str).encode())]
         + [
@@ -654,8 +648,8 @@ def _uses_temporal_oracle_source(
         return False
     verification = gt.get("verification")
     if isinstance(verification, dict) and verification.get("version") == 2:
-        from tools.verifier_v2.closure import selected_external_sources
-        from tools.verifier_v2.contract import load_contract
+        from verifier.closure import selected_external_sources
+        from verifier.contract import load_contract
 
         selected = {
             source for _destination, source in selected_external_sources(load_contract(gt))
@@ -696,10 +690,7 @@ def _uses_oracle_source(
         return False
     verification = gt.get("verification")
     if isinstance(verification, dict) and verification.get("version") == 2:
-        from tools.verifier_v2.closure import selected_fingerprint_relpaths
-        from tools.verifier_v2.contract import load_contract
-
-        return path in set(selected_fingerprint_relpaths(load_contract(gt)))
+        return _v2_closure_selects(gt, path)
     return True
 
 
@@ -717,10 +708,27 @@ def _uses_v2_verifier_source(
     verification = gt.get("verification")
     if not isinstance(verification, dict) or verification.get("version") != 2:
         return False
-    from tools.verifier_v2.closure import selected_fingerprint_relpaths
-    from tools.verifier_v2.contract import load_contract
+    return _v2_closure_selects(gt, path)
 
-    return path in set(selected_fingerprint_relpaths(load_contract(gt)))
+
+def _v2_closure_selects(gt: dict[str, Any], path: str) -> bool:
+    """Whether a v2 contract's closure selects ``path``; True if unknowable.
+
+    The base side of a diff can hold contracts written for an older grading
+    model (the Sep 19 history names materializers the current verifier
+    rejects). Their closure cannot be computed with today's verifier, so count
+    the path as used: over-reporting impact is safe, crashing the classifier
+    is not.
+    """
+    from verifier.closure import selected_fingerprint_relpaths
+    from verifier.contract import load_contract
+    from verifier.errors import ContractError
+
+    try:
+        contract = load_contract(gt)
+    except ContractError:
+        return True
+    return path in set(selected_fingerprint_relpaths(contract))
 
 
 def _change_endpoints(
@@ -742,6 +750,20 @@ def _change_endpoints(
     return ((old_state, change.path), (new_state, change.path))
 
 
+# v1 oracle packages that still live beside the v2 verifier under verifier/.
+_V1_ORACLE_PACKAGES = {"oracle", "oracle_p1", "oracle_temporal", "oracle_maintenance"}
+
+
+def _is_v2_verifier_path(path: str) -> bool:
+    """A v2 verifier source path (verifier/ minus the v1 oracle subpackages)."""
+    parts = PurePosixPath(path).parts
+    return (
+        len(parts) >= 2
+        and parts[0] == "verifier"
+        and parts[1] not in _V1_ORACLE_PACKAGES
+    )
+
+
 def _verifier_endpoint_impact(
     state: State,
     manifests: dict[str, dict[str, Any]],
@@ -750,11 +772,11 @@ def _verifier_endpoint_impact(
     """Classify tasks consuming one verifier path in one repository state."""
 
     parts = PurePosixPath(path).parts
-    if path.startswith("tools/verifier_v2/contracts/") or (
-        path.startswith("tools/verifier_v2/test_") and path.endswith(".py")
+    if path.startswith("verifier/contracts/") or (
+        path.startswith("verifier/test_") and path.endswith(".py")
     ):
         return None
-    if path.startswith("tools/verifier_v2/"):
+    if _is_v2_verifier_path(path):
         return (
             "verifier-implementation",
             {
@@ -1256,11 +1278,11 @@ def classify(
         elif task and parts[0] == "tasks":
             affected_substrates.add(task[0])
             _add_class(classes, reasons, task, "generated-task", f"generated task output changed: {path}")
-        elif path.startswith("tools/verifier_v2/contracts/") or (
-            path.startswith("tools/verifier_v2/test_") and path.endswith(".py")
+        elif path.startswith("verifier/contracts/") or (
+            path.startswith("verifier/test_") and path.endswith(".py")
         ):
             global_kinds.add("repository-infrastructure")
-        elif path.startswith("tools/verifier_v2/"):
+        elif _is_v2_verifier_path(path):
             global_kinds.add("verifier-implementation")
         elif verifier_endpoint_seen:
             # Endpoint ownership was computed against both repository states

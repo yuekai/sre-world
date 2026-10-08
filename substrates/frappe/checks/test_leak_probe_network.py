@@ -13,6 +13,14 @@ assert SPEC is not None and SPEC.loader is not None
 leak_probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(leak_probe)
 
+# leak_probe.py still pins the retired 03-F1-connection-cap task, whose chart no
+# longer exists. Render a live Frappe task's chart instead: the network
+# invariants are substrate-wide, not scenario-specific.
+_LIVE_TASK = leak_probe.REPO / "tasks" / "frappe" / "07-desk-and-queue-outage"
+leak_probe.SCENARIO = _LIVE_TASK
+leak_probe.CHART = _LIVE_TASK / "environment" / "chart"
+leak_probe.OVERLAY = _LIVE_TASK / "environment" / "task.values.yaml"
+
 
 def _mutate_main_egress(mutator) -> str:
     documents = list(yaml.safe_load_all(leak_probe._render_chart()))

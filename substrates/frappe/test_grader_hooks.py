@@ -1,17 +1,22 @@
 """Frappe-substrate deterministic oracle test (D16 Phase 4 exit gate).
 
 Peer of ``tools/test_causal_ladder_oracle.py`` for the Slack substrate. Proves
-that a hand-crafted rundir + ``scenarios/frappe/03-F1-connection-cap/
-ground-truth.yaml`` grades cleanly under ``oracle.evaluate.evaluate_run`` — the
+that a hand-crafted rundir + the MariaDB leg of the generated
+``tasks/frappe/07-desk-and-queue-outage`` manifest (the per-account
+``max_user_connections`` ceiling) grades cleanly under
+``oracle.evaluate.evaluate_run`` and the v2 verifier — the
 Phase 4 acceptance gate for the D16 grader fork (substrates/frappe/grader_hooks.py
 + substrates/frappe/loadgen_sidecar._grade_episode).
 
-Four cases:
-  * golden           — healthy soak + correct report → PASS
+Core cases (legacy oracle):
+  * golden           — healthy soak + correct report + runtime repair → PASS
   * nop              — bad soak + no report        → FAIL (gate1 + gate2)
   * wrong_component  — healthy soak + off-target report → FAIL (gate2 attribution)
-  * broad_mutation   — healthy soak + correct report + unrelated config knob edit
-                       → FAIL (minimality)
+  * persisted fix / broad_mutation — a protected my.cnf edit → FAIL (minimality)
+  * runtime scope    — unrelated SQL-visible state moved → FAIL (mariadb_state)
+
+The v2 verifier cases grade the same rundirs; there the incident report is
+advisory and only measured state decides the verdict.
 
 These exercise the Frappe-specific pieces the fork introduces:
   * ``verifier/oracle/frappe_assemble.CONFIG_RELPATH`` = ``sut/config/mariadb.yaml``
@@ -54,10 +59,72 @@ _SIDECAR_SPEC.loader.exec_module(FRAPPE_SIDECAR)
 # the generated copy under tasks/ carries the resolved numbers, and it is what the
 # in-pod oracle actually reads. (verifier/test_grader_parity.py resolves the same
 # path for slack-spine.)
-GROUND_TRUTH = (
-    ROOT / "tasks" / "frappe" / "03-F1-connection-cap"
+#
+# Every live Frappe scenario is a compound incident. These tests exercise the
+# MariaDB runtime-state grading mechanics, so they grade against the manifest's
+# MariaDB leg alone: the redis-queue leg (its state probes, driver checks and
+# answer-key entry) is stripped by ``_mariadb_leg_manifest``.
+SOURCE_GROUND_TRUTH = (
+    ROOT / "tasks" / "frappe" / "07-desk-and-queue-outage"
     / "environment" / "chart" / "ground-truth.yaml"
 )
+_FAULT_PROBE = "max_user_connections"
+_FAULT_KEY = f"mariadb.{_FAULT_PROBE}"
+_FAULT_VALUE = 8
+_REPAIRED_VALUE = 0
+
+
+def _mariadb_leg_manifest() -> dict:
+    manifest = yaml.safe_load(SOURCE_GROUND_TRUTH.read_text())
+    mariadb_leg = [
+        entry for entry in manifest.pop("ground_truth_set")
+        if entry["service"] == "mariadb"
+    ]
+    assert len(mariadb_leg) == 1, mariadb_leg
+    manifest["ground_truth"] = mariadb_leg[0]
+    manifest.pop("redis_state")
+    manifest["required_capabilities"] = [
+        cap for cap in manifest["required_capabilities"]
+        if not cap.startswith("redis.")
+    ]
+    manifest["thresholds"].pop("by_driver", None)
+    manifest["minimality"]["allowed_keys_by_component"] = {
+        "mariadb.max-user-connections": manifest["minimality"][
+            "allowed_keys_by_component"
+        ]["mariadb.max-user-connections"]
+    }
+    verification = manifest["verification"]
+    verification["materializers"] = [
+        name for name in verification["materializers"] if name != "redis_state"
+    ]
+    dropped = {"Q-1", "REDIS-1"}
+    verification["public_requirements"] = [
+        req for req in verification["public_requirements"]
+        if req["id"] not in dropped
+    ]
+    verification["outcome"]["checks"] = [
+        check for check in verification["outcome"]["checks"]
+        if not dropped & set(check["requirement_ids"])
+    ]
+    verification["safe_repair"]["packs"] = [
+        pack for pack in verification["safe_repair"]["packs"]
+        if pack["name"] != "redis_configuration"
+    ]
+    verification["safe_repair"]["require"] = [
+        name for name in verification["safe_repair"]["require"]
+        if name != "redis_configuration"
+    ]
+    return manifest
+
+
+GROUND_TRUTH_DOC = _mariadb_leg_manifest()
+
+
+def _ground_truth(tmp_path: Path) -> Path:
+    path = tmp_path / "ground-truth.yaml"
+    path.write_text(yaml.safe_dump(GROUND_TRUTH_DOC, sort_keys=False))
+    return path
+
 
 # Every service the docker_state probe requires for outcome's services_up check.
 # Matches ``grader_hooks.DEFAULT_DOCKER_SERVICES`` + the mariadb readiness key.
@@ -181,7 +248,7 @@ def _healthy_loadgen() -> list[dict]:
     latencies from those bands keeps this grader contract test load-bearing
     without pinning it to a stale calibration run.
     """
-    manifest = yaml.safe_load(GROUND_TRUTH.read_text())
+    manifest = GROUND_TRUTH_DOC
     bands = manifest.get("thresholds", {}).get("p99_ms_by_phase")
     if not isinstance(bands, dict):
         raise RuntimeError("Frappe ground truth is missing p99_ms_by_phase")
@@ -220,7 +287,7 @@ def _degraded_loadgen() -> list[dict]:
     return peak_ok + peak_err + trough_ok
 
 
-def _config_docs(*, mutated_max_connections: int | None = None,
+def _config_docs(*, persisted_fault_value: int | None = None,
                  extra_wait_timeout: int | None = None
                  ) -> tuple[dict, dict]:
     """Return ``(before, after)`` mariadb.yaml documents.
@@ -228,20 +295,22 @@ def _config_docs(*, mutated_max_connections: int | None = None,
     ``before`` mirrors what the stamper's ``_render_config_before`` produces after
     piping the bitnami-rendered ``my.cnf`` through
     ``grader_hooks.mariadb_cnf_to_config_dict``: the faulted ``[mysqld]`` block
-    flattens to ``{"mariadb": {"max_connections": 10, "performance_schema": True}}``.
+    flattens to ``{"mariadb": {"max_connections": 151, "performance_schema": True}}``.
+    The fault is runtime-only (``SET GLOBAL max_user_connections``), so the
+    persisted my.cnf is healthy.
 
     ``after`` mirrors what the sidecar's evidence collector writes for the
     persisted my.cnf surface. Golden path keeps ``after == before`` because the
     direct SQL snapshots are a separate evidence object. Test knobs let
-    callers simulate a chart-level edit — either the golden fix landing in the
-    persisted config (``mutated_max_connections=200``) or a stray unrelated knob
-    (``extra_wait_timeout=200``) — so we can exercise both minimality passes
-    and the broad-mutation failure path.
+    callers simulate a chart-level edit — either the fix being written into the
+    persisted config (``persisted_fault_value=0``) or a stray unrelated knob
+    (``extra_wait_timeout=200``) — so we can exercise the protected-config
+    minimality failure paths.
     """
-    before = {"mariadb": {"max_connections": 10, "performance_schema": True}}
+    before = {"mariadb": {"max_connections": 151, "performance_schema": True}}
     after = json.loads(json.dumps(before))  # deep copy (all scalars)
-    if mutated_max_connections is not None:
-        after["mariadb"]["max_connections"] = mutated_max_connections
+    if persisted_fault_value is not None:
+        after["mariadb"][_FAULT_PROBE] = persisted_fault_value
     if extra_wait_timeout is not None:
         after["mariadb"]["wait_timeout"] = extra_wait_timeout
     return before, after
@@ -258,7 +327,8 @@ def _write_mariadb_snapshots(
     failed_probe: str | None = None,
 ) -> None:
     baseline_values = {
-        "max_connections": 10,
+        _FAULT_PROBE: _FAULT_VALUE,
+        "max_connections": 151,
         "unrelated_globals": {"count": 600, "sha256": "d" * 64},
         "performance_schema": True,
         "wait_timeout": 28800,
@@ -269,7 +339,7 @@ def _write_mariadb_snapshots(
     }
     final_values = dict(baseline_values)
     if repaired:
-        final_values["max_connections"] = 200
+        final_values[_FAULT_PROBE] = _REPAIRED_VALUE
     final_values["wait_timeout"] = runtime_wait_timeout
     final_values["unrelated_globals"] = {
         "count": 600,
@@ -278,6 +348,7 @@ def _write_mariadb_snapshots(
     final_values["schema"] = {"count": 512, "sha256": runtime_schema_sha256}
     final_values["doctype_checksum"] = runtime_doctype_checksum
     kinds = {
+        _FAULT_PROBE: "global_variable",
         "max_connections": "global_variable",
         "unrelated_globals": "global_variables_fingerprint",
         "performance_schema": "global_variable",
@@ -317,7 +388,7 @@ def _write_mariadb_snapshots(
 
 
 def _build_run(root: Path, *, healthy: bool, report: dict | None,
-               mutated_max_connections: int | None = None,
+               persisted_fault_value: int | None = None,
                extra_wait_timeout: int | None = None,
                runtime_wait_timeout: int = 28800,
                runtime_globals_sha256: str = "d" * 64,
@@ -346,8 +417,8 @@ def _build_run(root: Path, *, healthy: bool, report: dict | None,
     run = root / f"{'healthy' if healthy else 'degraded'}"
     if report is not None:
         run = run.with_name(run.name + f"__{report['component'].replace('.', '_')}")
-    if mutated_max_connections is not None:
-        run = run.with_name(run.name + f"__max{mutated_max_connections}")
+    if persisted_fault_value is not None:
+        run = run.with_name(run.name + f"__persisted{persisted_fault_value}")
     if extra_wait_timeout is not None:
         run = run.with_name(run.name + f"__wait{extra_wait_timeout}")
     run.mkdir(parents=True)
@@ -359,7 +430,9 @@ def _build_run(root: Path, *, healthy: bool, report: dict | None,
         json.dumps({
             "run_id": f"frappe-oracle-{run.name}", "profile": "frappe_dev",
             "declare_ts_s": 90.0 if report is not None else None,
-            "soak_start_s": 90.0 if report is not None else None,
+            # An undeclared episode still runs its protected soak once the
+            # agent window closes, so soak_start_s is always finite.
+            "soak_start_s": 90.0,
             "end_s": 200.0,
         })
     )
@@ -370,16 +443,16 @@ def _build_run(root: Path, *, healthy: bool, report: dict | None,
     report_envelope = {"findings": [report]} if report is not None else None
     (run / "report.json").write_text(json.dumps(report_envelope))
 
-    before, after = _config_docs(mutated_max_connections=mutated_max_connections,
+    before, after = _config_docs(persisted_fault_value=persisted_fault_value,
                                  extra_wait_timeout=extra_wait_timeout)
     for side, doc in (("config_before", before), ("config_after", after)):
         path = run / side / "sut" / "config" / "mariadb.yaml"
         path.parent.mkdir(parents=True)
         path.write_text(yaml.safe_dump(doc, sort_keys=True))
+    soak_path = run / "config_after_soak_end" / "sut" / "config" / "mariadb.yaml"
+    soak_path.parent.mkdir(parents=True)
+    soak_path.write_text(yaml.safe_dump(after, sort_keys=True))
     if report is not None:
-        soak_path = run / "config_after_soak_end" / "sut" / "config" / "mariadb.yaml"
-        soak_path.parent.mkdir(parents=True)
-        soak_path.write_text(yaml.safe_dump(after, sort_keys=True))
         # The generated task manifest stamps agent_boundary.required, so a
         # declared run must carry a successful frozen-boundary receipt with the
         # graded soak starting at or after freezer ack. Same shape as
@@ -413,11 +486,11 @@ def _build_run(root: Path, *, healthy: bool, report: dict | None,
 
 _GOLDEN_REPORT = {
     "service": "mariadb",
-    "component": "mariadb.max-connections",
+    "component": "mariadb.max-user-connections",
     "mechanism": (
-        "mariadb max_connections cap below concurrent Frappe web demand under "
-        "peak load — connections saturate, DB refuses new sessions with too many "
-        "connections, and Desk API returns 500."
+        "mariadb max_user_connections per-account ceiling below concurrent "
+        "Frappe web demand under peak load — the site account is refused with "
+        "error 1226 and Desk API returns 500."
     ),
 }
 
@@ -502,7 +575,7 @@ def test_grant_revocation_helpers_render_only_allowlisted_sql() -> None:
 def test_golden_grades_pass(tmp_path: Path) -> None:
     """Healthy soak + correct report + no unrelated config edits → overall PASS."""
     run = _build_run(tmp_path, healthy=True, report=_GOLDEN_REPORT)
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "PASS", verdict
     assert verdict["gate1"]["pass"] is True
     assert verdict["gate2"]["pass"] is True
@@ -510,40 +583,37 @@ def test_golden_grades_pass(tmp_path: Path) -> None:
     # SQL-runtime fix leaves the on-disk config untouched → no mutations.
     assert verdict["minimality"]["mutated_keys"] == []
     assert verdict["mariadb_state"]["pass"] is True
-    assert verdict["mariadb_state"]["mutated_keys"] == [
-        "mariadb.max_connections"
-    ]
+    assert verdict["mariadb_state"]["mutated_keys"] == [_FAULT_KEY]
 
 
-def test_golden_with_chart_level_fix_passes(tmp_path: Path) -> None:
-    """A chart-level fix that raises max_connections lands in the diff cleanly.
+def test_persisted_config_fix_fails_minimality(tmp_path: Path) -> None:
+    """Writing the fix into the persisted my.cnf is outside the repair scope.
 
-    Simulates a follow-up scenario where the golden solve upgrades the chart
-    values instead of running ``SET GLOBAL`` at runtime. The mutation
-    ``mariadb.max_connections`` is exactly the allowed key for the reported
-    component, so minimality passes with a NON-empty mutated_keys list — proving
-    the dotted-key flatten works and the ground-truth's allowed-keys namespace
-    matches 1:1.
+    The fault is runtime-only, so the reported component's allowed_keys is
+    empty: a chart-level ``max_user_connections`` edit is a named minimality
+    violation even though the runtime repair itself is correct — proving the
+    dotted-key flatten reaches the minimality differ.
     """
     run = _build_run(tmp_path, healthy=True, report=_GOLDEN_REPORT,
-                     mutated_max_connections=200)
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
-    assert verdict["overall"] == "PASS", verdict
-    assert verdict["minimality"]["mutated_keys"] == ["mariadb.max_connections"]
-    assert verdict["minimality"]["violations"] == []
+                     persisted_fault_value=_REPAIRED_VALUE)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
+    assert verdict["overall"] == "FAIL", verdict
+    assert verdict["mariadb_state"]["pass"] is True
+    assert verdict["minimality"]["mutated_keys"] == [_FAULT_KEY]
+    assert verdict["minimality"]["violations"] == [_FAULT_KEY]
 
 
 def test_nop_grades_fail(tmp_path: Path) -> None:
     """No report + degraded soak → overall FAIL on gate1 AND gate2."""
     run = _build_run(tmp_path, healthy=False, report=None)
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["gate1"]["pass"] is False   # outcome collapsed
     assert verdict["gate2"]["pass"] is False   # no report filed
     assert verdict["mariadb_state"]["pass"] is False
     assert verdict["mariadb_state"]["checks"]["mutation_scope"][
         "missing_required"
-    ] == ["mariadb.max_connections"]
+    ] == [_FAULT_KEY]
 
 
 def test_wrong_component_fails_attribution(tmp_path: Path) -> None:
@@ -557,7 +627,7 @@ def test_wrong_component_fails_attribution(tmp_path: Path) -> None:
     wrong = {"service": "frappe-web", "component": "frappe-web.db-conn",
              "mechanism": "frappe-web tier connection pool exhaustion"}
     run = _build_run(tmp_path, healthy=True, report=wrong)
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["gate1"]["pass"] is True
     assert verdict["gate2"]["pass"] is False
@@ -570,14 +640,15 @@ def test_wrong_component_fails_attribution(tmp_path: Path) -> None:
 def test_broad_mutation_fails_minimality(tmp_path: Path) -> None:
     """Healthy soak + correct report + an unrelated mariadb knob edit → FAIL.
 
-    The agent raised max_connections AND flipped wait_timeout. Gate1 + Gate2
-    pass, but minimality flags the unrelated mutation: max_unrelated_mutations
-    is 0 and ``mariadb.wait_timeout`` is not in the allowed_keys for
-    ``mariadb.max-connections``.
+    The agent repaired max_user_connections at runtime AND flipped wait_timeout
+    in the persisted config. Gate1 + Gate2 pass, but minimality flags the
+    unrelated mutation: max_unrelated_mutations is 0 and
+    ``mariadb.wait_timeout`` is not in the allowed_keys for
+    ``mariadb.max-user-connections``.
     """
     run = _build_run(tmp_path, healthy=True, report=_GOLDEN_REPORT,
-                     mutated_max_connections=200, extra_wait_timeout=200)
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+                     extra_wait_timeout=200)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["gate1"]["pass"] is True
     assert verdict["gate2"]["pass"] is True
@@ -592,7 +663,7 @@ def test_unrelated_runtime_global_fails_mariadb_minimality(tmp_path: Path) -> No
         report=_GOLDEN_REPORT,
         runtime_wait_timeout=200,
     )
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["minimality"]["pass"] is True
     assert verdict["mariadb_state"]["pass"] is False
@@ -608,7 +679,7 @@ def test_unlisted_runtime_global_fails_via_complete_fingerprint(tmp_path: Path) 
         report=_GOLDEN_REPORT,
         runtime_globals_sha256="e" * 64,
     )
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["minimality"]["pass"] is True
     assert verdict["mariadb_state"]["checks"]["mutation_scope"]["unexpected"] == [
@@ -625,7 +696,7 @@ def test_correct_repair_plus_unrelated_ddl_fails_runtime_minimality(
         report=_GOLDEN_REPORT,
         runtime_schema_sha256="c" * 64,
     )
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["gate1"]["pass"] is True
     assert verdict["gate2"]["pass"] is True
@@ -643,7 +714,7 @@ def test_correct_repair_plus_unrelated_dml_fails_runtime_minimality(
         report=_GOLDEN_REPORT,
         runtime_doctype_checksum=999999,
     )
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["gate1"]["pass"] is True
     assert verdict["gate2"]["pass"] is True
@@ -657,12 +728,12 @@ def test_failed_required_sql_probe_fails_with_error_metadata(tmp_path: Path) -> 
         tmp_path,
         healthy=True,
         report=_GOLDEN_REPORT,
-        failed_probe="max_connections",
+        failed_probe=_FAULT_PROBE,
     )
-    verdict = evaluate_run(run, manifest_path=GROUND_TRUTH)
+    verdict = evaluate_run(run, manifest_path=_ground_truth(tmp_path))
     assert verdict["overall"] == "FAIL", verdict
     assert verdict["mariadb_state"]["checks"][
-        "max_connections.soak_end.query"
+        f"{_FAULT_PROBE}.soak_end.query"
     ]["pass"] is False
     assert any("simulated SQL failure" in reason for reason in verdict["reasons"])
 
@@ -671,14 +742,14 @@ def test_missing_required_mariadb_snapshot_fails_loudly(tmp_path: Path) -> None:
     run = _build_run(tmp_path, healthy=True, report=_GOLDEN_REPORT)
     (run / "sut" / "mariadb_state_declaration.json").unlink()
     with pytest.raises(FileNotFoundError, match="declaration snapshot is missing"):
-        evaluate_run(run, manifest_path=GROUND_TRUTH)
+        evaluate_run(run, manifest_path=_ground_truth(tmp_path))
 
 
 def test_verifier_v2_golden_uses_direct_mariadb_state(tmp_path: Path) -> None:
-    from tools.verifier_v2.evaluate import evaluate_run as evaluate_v2
+    from verifier.evaluate import evaluate_run as evaluate_v2
 
     run = _build_run(tmp_path, healthy=True, report=_GOLDEN_REPORT)
-    verdict = evaluate_v2(run, GROUND_TRUTH, write_artifacts=False)
+    verdict = evaluate_v2(run, _ground_truth(tmp_path), write_artifacts=False)
     assert verdict["overall"] == "PASS", verdict
     checks = verdict["safe_repair"]["packs"]["db_setting_persistence"]["checks"]
     assert checks["safe_repair.db_setting_persistence.runtime_mutation_is_targeted"][
@@ -688,7 +759,7 @@ def test_verifier_v2_golden_uses_direct_mariadb_state(tmp_path: Path) -> None:
 
 def test_verifier_v2_provisional_latency_is_diagnostic_only(tmp_path: Path) -> None:
     """Hosted jitter cannot override direct proof of a complete safe repair."""
-    from tools.verifier_v2.evaluate import evaluate_run as evaluate_v2
+    from verifier.evaluate import evaluate_run as evaluate_v2
 
     run = _build_run(tmp_path, healthy=True, report=_GOLDEN_REPORT)
     noisy = _healthy_loadgen()
@@ -696,19 +767,19 @@ def test_verifier_v2_provisional_latency_is_diagnostic_only(tmp_path: Path) -> N
         record["latency_ms"] = 1_000.0
     _write_jsonl(run / "loadgen.jsonl", noisy)
 
-    verdict = evaluate_v2(run, GROUND_TRUTH, write_artifacts=True)
-    legacy = json.loads((run / "derived" / "legacy-outcome.json").read_text())
+    verdict = evaluate_v2(run, _ground_truth(tmp_path), write_artifacts=True)
+    outcome = json.loads((run / "derived" / "outcome.json").read_text())
 
-    assert legacy["checks"]["latency"]["pass"] is False
+    assert outcome["checks"]["latency"]["pass"] is False
     assert "outcome.sustained_latency" not in verdict["outcome"]["checks"]
     assert verdict["overall"] == "PASS", verdict
 
 
 def test_verifier_v2_nop_fails_on_runtime_state(tmp_path: Path) -> None:
-    from tools.verifier_v2.evaluate import evaluate_run as evaluate_v2
+    from verifier.evaluate import evaluate_run as evaluate_v2
 
     run = _build_run(tmp_path, healthy=False, report=None)
-    verdict = evaluate_v2(run, GROUND_TRUTH, write_artifacts=False)
+    verdict = evaluate_v2(run, _ground_truth(tmp_path), write_artifacts=False)
     assert verdict["overall"] == "FAIL", verdict
     checks = verdict["safe_repair"]["packs"]["db_setting_persistence"]["checks"]
     assert checks["safe_repair.db_setting_persistence.runtime_mutation_is_targeted"][
@@ -716,8 +787,9 @@ def test_verifier_v2_nop_fails_on_runtime_state(tmp_path: Path) -> None:
     ] is False
 
 
-def test_verifier_v2_wrong_report_attribution_fails(tmp_path: Path) -> None:
-    from tools.verifier_v2.evaluate import evaluate_run as evaluate_v2
+def test_verifier_v2_report_attribution_is_advisory(tmp_path: Path) -> None:
+    """The incident report is advisory: a wrong attribution cannot fail v2."""
+    from verifier.evaluate import evaluate_run as evaluate_v2
 
     wrong = {
         "service": "frappe-web",
@@ -725,14 +797,13 @@ def test_verifier_v2_wrong_report_attribution_fails(tmp_path: Path) -> None:
         "mechanism": "connection pressure in the web tier",
     }
     run = _build_run(tmp_path, healthy=True, report=wrong)
-    verdict = evaluate_v2(run, GROUND_TRUTH, write_artifacts=False)
-    assert verdict["overall"] == "FAIL", verdict
-    assert verdict["outcome"]["checks"]["outcome.canonical_report_service"]["pass"] is False
-    assert verdict["outcome"]["checks"]["outcome.canonical_report_component"]["pass"] is False
+    verdict = evaluate_v2(run, _ground_truth(tmp_path), write_artifacts=False)
+    assert verdict["overall"] == "PASS", verdict
+    assert not any("report" in check_id for check_id in verdict["outcome"]["checks"])
 
 
 def test_verifier_v2_unrelated_runtime_change_fails(tmp_path: Path) -> None:
-    from tools.verifier_v2.evaluate import evaluate_run as evaluate_v2
+    from verifier.evaluate import evaluate_run as evaluate_v2
 
     run = _build_run(
         tmp_path,
@@ -740,7 +811,7 @@ def test_verifier_v2_unrelated_runtime_change_fails(tmp_path: Path) -> None:
         report=_GOLDEN_REPORT,
         runtime_wait_timeout=200,
     )
-    verdict = evaluate_v2(run, GROUND_TRUTH, write_artifacts=False)
+    verdict = evaluate_v2(run, _ground_truth(tmp_path), write_artifacts=False)
     assert verdict["overall"] == "FAIL", verdict
     checks = verdict["safe_repair"]["packs"]["db_setting_persistence"]["checks"]
     assert checks["safe_repair.db_setting_persistence.all_required_sql_evidence_valid"][
@@ -822,9 +893,9 @@ def test_mariadb_probe_plan_uses_only_code_owned_sql() -> None:
         mariadb_probe_specs,
     )
 
-    manifest = yaml.safe_load(GROUND_TRUTH.read_text())
-    specs = mariadb_probe_specs(manifest)
+    specs = mariadb_probe_specs(GROUND_TRUTH_DOC)
     assert set(specs) == {
+        _FAULT_PROBE,
         "max_connections",
         "unrelated_globals",
         "performance_schema",
@@ -834,8 +905,8 @@ def test_mariadb_probe_plan_uses_only_code_owned_sql() -> None:
         "doctype_count",
         "doctype_checksum",
     }
-    assert mariadb_probe_query(specs["max_connections"]) == (
-        "SHOW GLOBAL VARIABLES LIKE 'max_connections';"
+    assert mariadb_probe_query(specs[_FAULT_PROBE]) == (
+        f"SHOW GLOBAL VARIABLES LIKE '{_FAULT_PROBE}';"
     )
     assert mariadb_probe_query(specs["unrelated_globals"]) == (
         "SHOW GLOBAL VARIABLES;"

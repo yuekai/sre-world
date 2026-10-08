@@ -93,7 +93,7 @@ _ALLOWED_RUNTIME_TOP = {"faultInit", "postgres", "app"}
 # scenario rides is chosen by measurement, and widening this list must be a
 # one-line, reviewable decision rather than a code change. Every name here is a
 # real Postgres GUC that is legitimately role-scopable; the first two already
-# appear in tools/verifier_v2/profiles/slack_lock_restart_v1.py's
+# appear in verifier/profiles/slack_lock_restart_v1.py's
 # `database_setting_envelope`, so the vocabulary is not novel.
 _ALLOWED_ROLE_GUC_KEYS = {"enabled", "role", "settings"}
 _ALLOWED_ROLE_GUCS = {

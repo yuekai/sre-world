@@ -1,0 +1,68 @@
+# RECONSTRUCTED 2026-10: this scenario postdates the 2026-09-19 history this
+# repository was restored from. It was rebuilt from Incident Arena task 006
+# (abundant-ai/incident-arena@fba011e) with tools/arena_backport.py; the
+# instruction, solve.sh, ground-truth.yaml and task_verifier/ are the task's
+# own bytes, and this spec is the minimal authoring that regenerates it.
+id: 10-T1-statement-timeout-canary
+slug: statement-timeout-canary
+title: "Application DB role carries a 150 ms statement_timeout (checkout failures at traffic peaks)"
+
+task:
+  name: "sre-world/saleor-spine-10t1-statement-timeout-canary"
+  description: >-
+    Diagnose intermittent checkout failures under cyclical Saleor traffic and
+    make a narrow, durable repair from the confined operator shell.
+  scenario: "saleor-spine/10-T1-statement-timeout-canary"
+  slice: "1"
+  metadata:
+    causal_distance: 3
+    temporal_emergence: true
+    fault_presentation: "committed"
+    profile: "saleor_timeout_eval"
+    report_vocabulary: true
+    agent_window_s: 3600.0
+    soak_s: 193.0
+    agent_timeout_sec: 3903.0
+    verifier_timeout_sec: 4743.0
+    build_timeout_sec: 2700.0
+    helm_timeout: "1200s"
+    ready_timeout_sec: 600
+    episode_ready_gate: true
+    healthcheck_retries: 197
+
+substrate: "saleor-spine"
+
+fault:
+  tier: runtime
+  header: |
+    Scenario saleor-spine/10-T1 - the API's database role carries a per-role
+    statement_timeout of 150 ms (ALTER ROLE saleor_app IN DATABASE saleor).
+
+    Short storefront reads stay under the limit, so the API looks healthy
+    between bursts; checkout's longer transactions hit SQLSTATE 57014 when
+    traffic peaks. The setting lives in pg_db_role_setting and applies to new
+    sessions only, so a repair must be durable for fresh connections without
+    restarting Saleor or PostgreSQL. Minimal correct fix: ALTER ROLE saleor_app
+    IN DATABASE saleor RESET statement_timeout, then let pooled sessions recycle.
+  values:
+    faultInit:
+      postgres:
+        enabled: true
+        readyMarker: true
+        statements:
+          - "ALTER ROLE saleor_app IN DATABASE saleor SET statement_timeout = '150ms'"
+
+difficulty:
+  primitive: T1
+  values:
+    loadgen:
+      profilesYaml: |
+        profiles:
+          saleor_timeout_eval:
+            base: saleor_eval
+            drivers:
+            - browse
+            - browse
+            - browse
+            - checkout_readback
+            - checkout_readback

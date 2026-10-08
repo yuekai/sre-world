@@ -160,6 +160,10 @@ worker:
   long:
     podAnnotations: {}
     replicaCount: 1
+    # Keep false for ordinary tasks so an unexpected worker exit remains a
+    # visible pod failure. Queue-fault tasks opt in so Helm can finish while
+    # Redis rejects worker registration and the worker can start after repair.
+    supervise: false
     autoscaling:
       enabled: false
       minReplicas: 1

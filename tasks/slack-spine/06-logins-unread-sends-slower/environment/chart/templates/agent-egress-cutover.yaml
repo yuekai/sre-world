@@ -1,4 +1,4 @@
-{{- if and (include "slack.enabled" (dict "root" $ "key" "main")) (not (or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled)) }}
+{{- if include "slack.enabled" (dict "root" $ "key" "main") }}
 apiVersion: v1
 kind: Secret
 metadata:

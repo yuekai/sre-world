@@ -138,36 +138,9 @@ _FRAPPE_SETUP_360_RESIZE_PENDING = (
     "--agent-setup-sec 300 to see the fleet pass under the old assumption."
 )
 
-_FRAPPE_360_WAIVED = (
-    "03-F1-connection-cap",
-    "03-QE1-rq-eviction-trap",
-    "03-U1-user-conn-cap",
-    "03-deletes-refused",
-    "03-edits-refused",
-    "03-mariadb-read-only",
-    "03-new-records-refused",
-    "03-readonly-flag-fog",
-    "03-saves-fail-and-refusals",
-    "06-job-submissions-fail",
-    "06-jobs-rejected-on-submit",
-    "06-queue-lag-bait",
-    "06-queue-write-guard",
-    "06-saves-refused-and-jobs-rejected",
-    "06-writes-and-jobs-fail",
-    "07-connections-and-jobs-fail",
-    "07-connections-and-queue-oom",
-    "07-deletes-and-jobs-fail",
-    "07-deletes-and-queue-oom",
-    "07-deletes-refused-and-jobs-stalled",
-    "07-desk-and-queue-oom",
-    "07-desk-and-queue-outage",
-    "07-edits-and-queue-oom",
-    "07-jobs-never-finish",
-    "07-new-records-and-jobs-fail",
-    "07-new-records-and-queue-oom",
-    "07-refused-pages-and-stalled-jobs",
-    "07-writes-and-queue-oom",
-)
+# Emptied in the 2026-10 reconstruction: every listed task was retired or now
+# passes (a) under episode-start anchoring (agent_window_s).
+_FRAPPE_360_WAIVED: tuple[str, ...] = ()
 
 # The ten ERP tasks below are in flight on PRs #437, #431 and #426. They were
 # authored to the same 900 + 300 + 1800 + 30 = 3030 convention as the 28 above
@@ -178,21 +151,9 @@ _FRAPPE_360_WAIVED = (
 # #437: declare_deadline_s 4830 -> 4890 rewrites environment/task.values.yaml and
 # moves the task's layer_fingerprint), so they must move WITH the fleet or not at
 # all. Listed one id at a time, not as a pattern, so each expires explicitly.
-_FRAPPE_360_WAIVED_POSTDATING = (
-    # PR #437 — false-alarm twins of the saturated 03-* singles
-    "03-saves-fail-reported",
-    "03-pages-refused-reported",
-    # PR #431 — false-alarm twins, batch 3
-    "03-spike-500s-reported",
-    "03-maint-saves-reported",
-    "06-jobs-fail-reported",
-    "06-jobs-500s-reported",
-    # PR #426 — k=2 compounds, batch 1
-    "07-edits-and-jobs-fail",
-    "07-new-records-and-conn-cap",
-    "07-edits-and-user-cap",
-    "07-deletes-and-user-cap",
-)
+# Emptied in the 2026-10 reconstruction: every listed task was retired or now
+# passes (a) under episode-start anchoring (agent_window_s).
+_FRAPPE_360_WAIVED_POSTDATING: tuple[str, ...] = ()
 
 _FRAPPE_SETUP_360_RESIZE_PENDING_POSTDATING = (
     _FRAPPE_SETUP_360_RESIZE_PENDING
@@ -218,23 +179,6 @@ WAIVERS.update(
 )
 WAIVERS.update(
     {
-        "slack-spine/13-P1-distractor-volume-shell": Waiver(
-            frozenset({"a"}),
-            "release-tier task whose fault ships as a PUBLISHED image layer: the "
-            "committed declare_deadline_s=3630 is baked into a published, "
-            "already-calibrated artifact, so re-sizing it here would block a "
-            "release-tier task on an unrelated PR. 3600 s budget + 300 s readiness "
-            "needs 4260 (360 setup) / 4200 (300 setup); it runs 3630 and relies on "
-            "the agent declaring early. Re-size it with its next image publication.",
-        ),
-        "slack-spine/09-I1-seq-lock-leak": Waiver(
-            frozenset({"a"}),
-            "known thin margin, shipped deliberately: a 1500 s budget against a "
-            "1530 s deadline on the substrate-inherited write_eval profile. The "
-            "profile is SHARED, so widening the window re-fingerprints every task "
-            "that selects it; the task ships on measurement that its agents declare "
-            "well inside the window.",
-        ),
         "slack-spine/10-SV1-pool-exhaustion-shell": Waiver(
             frozenset({"a"}),
             "non-hosted scaffold (INDEX.non_hosted): omitted from --all stamping, "
@@ -315,9 +259,15 @@ class Timings:
     warmup_s: float
     cycles: tuple[tuple[float, float], ...]
     deadline_source: str
+    # Episode-start anchoring: when set, the harness signals /grader/episode-start
+    # only after readiness and agent setup, so the declaration deadline is measured
+    # from the agent's first moment and must cover exactly its window.
+    agent_window_s: float | None = None
 
     @property
     def required_declare_s(self) -> float:
+        if self.agent_window_s is not None:
+            return self.agent_window_s + self.declare_margin_s
         return (
             self.agent_timeout_s
             + self.ready_timeout_s
@@ -460,7 +410,11 @@ def resolve(
             field="verifier_timeout_sec",
             task=task,
         ),
-        declare_deadline_s=float(profile.declare_deadline_s),
+        declare_deadline_s=(
+            substrate_mod.window_declare_deadline_s(sub, float(meta["agent_window_s"]))
+            if meta.get("agent_window_s") is not None
+            else float(profile.declare_deadline_s)
+        ),
         declare_margin_s=_num(
             meta.get("declare_margin_s"), 0.0, field="declare_margin_s", task=task
         ),
@@ -478,6 +432,11 @@ def resolve(
         warmup_s=float(profile.warmup_s),
         cycles=tuple((float(c[0]), float(c[2])) for c in profile.cycles),
         deadline_source=source,
+        agent_window_s=(
+            None
+            if meta.get("agent_window_s") is None
+            else _num(meta.get("agent_window_s"), 0.0, field="agent_window_s", task=task)
+        ),
     )
 
 
@@ -576,6 +535,8 @@ def _shrink_options(t: Timings) -> str:
 
 
 def _check_a(t: Timings) -> Finding | None:
+    if t.agent_window_s is not None:
+        return _check_a_anchored(t)
     if t.declare_deadline_s >= t.required_declare_s - 1e-9:
         return None
     short = t.required_declare_s - t.declare_deadline_s
@@ -627,6 +588,32 @@ def _check_a(t: Timings) -> Finding | None:
         + _shrink_options(t)
         + "waive it: add this task to WAIVERS in tools/timing_gate.py with a "
         "reason string."
+    )
+    return Finding(t.task, "a", _severity("a"), msg)
+
+
+def _check_a_anchored(t: Timings) -> Finding | None:
+    """(a) for episode-start-anchored tasks: the deadline covers the agent window
+    and Harbor lets the agent run for at least that window."""
+    problems = []
+    if t.declare_deadline_s < t.required_declare_s - 1e-9:
+        problems.append(
+            f"declare_deadline_s={t.declare_deadline_s:g} s < agent_window_s "
+            f"{t.agent_window_s:g} + declare_margin_s {t.declare_margin_s:g}"
+        )
+    if t.agent_timeout_s < t.agent_window_s - 1e-9:
+        problems.append(
+            f"agent_timeout_sec={t.agent_timeout_s:g} s < agent_window_s "
+            f"{t.agent_window_s:g} — Harbor would stop the agent inside its window"
+        )
+    if not problems:
+        return None
+    msg = (
+        f"{t.task}: (a) the declaration window does not cover the agent window "
+        "(episode-start anchored).\n      "
+        + "\n      ".join(problems)
+        + "\n  FIX: adjust task.metadata.agent_window_s / agent_timeout_sec or the "
+        f"profile deadline:\n{_fix_field(t)}"
     )
     return Finding(t.task, "a", _severity("a"), msg)
 

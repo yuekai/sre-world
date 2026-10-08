@@ -145,9 +145,17 @@ STOCK_IMAGES=(
   # here too — omitting it makes `kind load` fail ("image not present locally").
   "quay.io/prometheuscommunity/postgres-exporter:v0.15.0"
 )
+# Docker Hub no longer serves minio/minio; the project mirrors the pinned release
+# (amd64) into its registry, so pull that and keep the canonical local name.
+MINIO_MIRROR="ghcr.io/yuekai/sre-world/slack-main@sha256:7910f6ae9706a6cc4a19f8e2c78c49e0f98c0ae4728aa4045fb33221b9e6d74a"
 for img in "${STOCK_IMAGES[@]}"; do
   log "pulling ${img}${PLATFORM:+ (${PLATFORM})}"
-  docker pull ${PULL_ARGS[@]+"${PULL_ARGS[@]}"} "${img}" || fail "pull failed: ${img}"
+  if [[ "${img}" == minio/minio:* ]]; then
+    docker pull "${MINIO_MIRROR}" || fail "pull failed: ${MINIO_MIRROR}"
+    docker tag "${MINIO_MIRROR}" "${img}" || fail "re-tag failed: ${img}"
+  else
+    docker pull ${PULL_ARGS[@]+"${PULL_ARGS[@]}"} "${img}" || fail "pull failed: ${img}"
+  fi
   # Flatten the multi-arch manifest list to a single-arch local image: both `kind
   # load docker-image` and `k3s ctr images import` do `docker save | ctr import`,
   # which fails on manifest lists under Docker Desktop's containerd store. A no-op

@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# submit_incident_report — file the incident report from the operator shell.
-# Peer of the slack-spine/frappe foothold script: POSTs the findings envelope
-# to the loadgen /declare endpoint (which also freezes the grading snapshot).
+# submit_incident_report — record what you found, from the operator shell.
+# Peer of the slack-spine/frappe foothold script: POSTs the findings envelope to
+# the loadgen advisory report endpoint.
 #
+# ADVISORY ONLY. Filing a report does NOT end the episode, does NOT freeze the
+# system, and does NOT affect scoring. It is where you record what you found and
+# why, for whoever reads this trajectory later. When the repair itself is done,
+# run `declare_repair_complete` — that is the only command that ends an episode.
+# You may file a report and keep working, file one after declaring, or never file
+# one at all; the score is identical.
 # Usage (flag form, repeatable for multi-finding scenarios):
 #   submit_incident_report --service <service> --component <service>.<part> \
 #                          --mechanism "<one-paragraph root-cause mechanism>"
@@ -11,7 +17,7 @@
 #   submit_incident_report <<'JSON' ... JSON
 set -euo pipefail
 
-DECLARE_URL="${DECLARE_URL:-http://loadgen:9100/declare}"
+REPORT_URL="${REPORT_URL:-http://loadgen:9100/report}"
 
 # --help: THE agent-facing contract (the minimal-instruction convention keeps
 # the task briefing to one symptom line and points here for everything else).
@@ -30,9 +36,9 @@ DECLARE_URL="${DECLARE_URL:-http://loadgen:9100/declare}"
 if [ "${1:-}" = "--components" ] || [ "${1:-}" = "--list" ]; then
   RESP="$(curl -sS -X POST -H 'Content-Type: application/json' \
     -d '{"findings":[{"service":"__list__","component":"__list__","mechanism":"list"}]}' \
-    "${DECLARE_URL}" 2>/dev/null || true)"
+    "${REPORT_URL}" 2>/dev/null || true)"
   if [ -z "${RESP}" ] || ! printf '%s' "${RESP}" | jq -e '.valid_components' >/dev/null 2>&1; then
-    echo "submit_incident_report: could not retrieve the component vocabulary from ${DECLARE_URL}" >&2
+    echo "submit_incident_report: could not retrieve the component vocabulary from ${REPORT_URL}" >&2
     echo "(the grader may still be provisioning — wait a few seconds and retry)" >&2
     exit 22
   fi
@@ -142,17 +148,18 @@ else
     printf ']}')"
 fi
 
-echo "[submit_incident_report] POST ${DECLARE_URL}"
-# The declare endpoint returns 503 until the loadgen finishes provisioning
-# (catalog discovery + webhook registration). An agent that repairs FAST can
+echo "[submit_incident_report] POST ${REPORT_URL}"
+# The report endpoint can answer 503 while the loadgen finishes provisioning
+# (catalog discovery + webhook registration). An agent that diagnoses FAST can
 # legitimately reach this line inside that window (seen in trial forensics) —
 # retry 503s for up to 2 minutes; any other failure stays fatal.
 for attempt in $(seq 1 24); do
   HTTP_CODE="$(curl -sS -o /tmp/.declare_resp -w '%{http_code}' -X POST \
-    -H 'Content-Type: application/json' -d "${BODY}" "${DECLARE_URL}" || echo 000)"
+    -H 'Content-Type: application/json' -d "${BODY}" "${REPORT_URL}" || echo 000)"
   if [ "${HTTP_CODE}" = "200" ]; then
     cat /tmp/.declare_resp; echo
-    echo "[submit_incident_report] declared."
+    echo "[submit_incident_report] report recorded. This did NOT end the episode;"
+    echo "[submit_incident_report] run declare_repair_complete when the repair is done."
     exit 0
   fi
   if [ "${HTTP_CODE}" = "400" ]; then

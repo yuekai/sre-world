@@ -104,7 +104,7 @@ thresholds:
   # of in-flight 250 ms holds can straddle the declaration. 30 s clears them and still
   # leaves >= 90 s of the 120 s soak — always at least one complete peak and one complete
   # trough at this profile's 30/30 cycle, so no declared (driver, phase) window can be
-  # empty (an empty window FAILS LOUDLY, verifier/oracle/outcome.py:392-399). error_rate
+  # empty (an empty window FAILS LOUDLY, verifier/providers/outcome.py::_saturation_check). error_rate
   # and goodput are NOT settled; they grade the full soak.
   latency_settle_s: 30
   # SCOPE GUARDS, consumed by `lane_goodput_and_errors`. Measured 0.0 / 1.0 on every lane
@@ -143,9 +143,8 @@ soak_cycles: 2
 verification:
   version: 2
   materializers:
-  - incident_report
   - repair_scope
-  - legacy_outcome
+  - outcome
   - traffic_reconciliation
   public_requirements:
   - id: OSV-OUT-1
@@ -159,68 +158,58 @@ verification:
   - id: OSV-EVID-1
     text: Final verification runs behind a terminal agent boundary and its receipt is bound to the finalized evidence bundle.
   - id: OSV-COMPLETE-1
-    text: One non-null report freezes the agent and starts final verification.
-  - id: C-D-1
-    text: Submit exactly one non-null incident report containing exactly 1 finding to finish and freeze the run; `submit_incident_report` is the supported interface, and the finding must name service redis and component redis.cache-policy using the published vocabulary, with no extra and no missing finding. Mechanism prose is advisory.
-  completion:
-    required: true
-    requirement_ids: [OSV-COMPLETE-1, C-D-1]
-    summary: A non-null report with the required canonical single-pair attribution completed and froze the run.
+    text: The agent is frozen at the end of its window and final verification runs behind that boundary.
   outcome:
     checks:
-    - id: canonical_report_shape
-      requirement_ids: [C-D-1]
-      summary: The incident report uses the canonical findings envelope with exactly 1 complete finding.
-      observe: {artifact: derived/incident-report.json, pointer: /pass}
-      assert: {op: equals, value: true}
-    # SET EQUALITY, so over-attribution is a miss: an agent that files the shared store
-    # AND one of the three victim roles fails here. That is the OSV shape's whole point.
-    - id: canonical_report_set
-      requirement_ids: [C-D-1]
-      summary: The incident report names exactly the answer-key set of (service, component) pairs — a missing pair and an extra pair both fail.
-      observe: {artifact: derived/incident-report.json, pointer: /pairs}
-      assert: {op: set_equals, value: ["redis/redis.cache-policy"]}
+    # These authored rows grade the disclosed SLI limits. The unified verifier
+    # separately derives exact report-component grading from the answer set; the
+    # safe_repair rows below reject touching the shared store and a victim role.
     - id: sustained_latency
       requirement_ids: [OSV-OUT-1]
       summary: Peak and trough p90 message-write latency satisfy the disclosed two-cycle limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency/pass}
       assert: {op: equals, value: true}
     - id: sustained_error_rate
       requirement_ids: [OSV-OUT-1]
       summary: Message-write error rate satisfies the disclosed limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/error_rate/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/error_rate/pass}
       assert: {op: equals, value: true}
     - id: sustained_correct_goodput
       requirement_ids: [OSV-OUT-1]
       summary: Correct message-write goodput satisfies the disclosed floor.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/goodput/pass}
       assert: {op: equals, value: true}
     # THE THREE VICTIMS, named individually so a verdict says WHICH lane is unrepaired
     # rather than only that something is.
     - id: lane_login_latency
       requirement_ids: [OSV-LANE-1]
       summary: The sign-in lane's own p90 satisfies its published peak and trough limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency_by_driver/per_driver/session_login/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency_by_driver/per_driver/session_login/pass}
       assert: {op: equals, value: true}
     - id: lane_unread_latency
       requirement_ids: [OSV-LANE-1]
       summary: The unread-check lane's own p90 satisfies its published peak and trough limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency_by_driver/per_driver/session_unread/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency_by_driver/per_driver/session_unread/pass}
       assert: {op: equals, value: true}
     - id: lane_send_latency
       requirement_ids: [OSV-LANE-1]
       summary: The message-send lane's own p90 satisfies its published peak and trough limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency_by_driver/per_driver/session_post/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency_by_driver/per_driver/session_post/pass}
       assert: {op: equals, value: true}
     - id: lane_goodput_and_errors
       requirement_ids: [OSV-LANE-1]
       summary: Every separately measured lane satisfies its own error-rate ceiling and goodput floor.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/by_driver/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/by_driver/pass}
       assert: {op: equals, value: true}
     - id: required_services_running
       requirement_ids: [OSV-OUT-1]
       summary: Every required service is running at final collection.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
+      observe: {artifact: derived/outcome.json, pointer: /checks/services_up/value/all_running}
+      assert: {op: equals, value: true}
+    - id: restarts_are_legitimate
+      requirement_ids: [OSV-SCOPE-1]
+      summary: Protected pod-state evidence proves no restart masked the in-memory fault without a persisted repair.
+      observe: {artifact: derived/outcome.json, pointer: /checks/services_up/value/restart_legitimate}
       assert: {op: equals, value: true}
     - id: offered_work_reconciled
       requirement_ids: [OSV-OUT-1]
@@ -229,13 +218,6 @@ verification:
       assert: {op: equals, value: true}
   safe_repair:
     packs:
-    - name: correct_goodput
-      checks:
-      - id: correct_writes
-        requirement_ids: [OSV-OUT-1]
-        summary: Offered writes complete with the published correct-goodput ratio.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
-        assert: {op: equals, value: true}
     - name: traffic_reconciliation
       checks:
       - id: no_suppression
@@ -247,13 +229,6 @@ verification:
         requirement_ids: [OSV-OUT-1]
         summary: Every arrival across the complete immutable traffic ledger is represented by the recorded accounting totals.
         observe: {artifact: derived/traffic-reconciliation.json, pointer: /complete_accounting}
-        assert: {op: equals, value: true}
-    - name: service_health
-      checks:
-      - id: required_services_up
-        requirement_ids: [OSV-OUT-1]
-        summary: Every required service remains healthy through the soak.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
         assert: {op: equals, value: true}
     - name: repair_scope
       checks:
@@ -282,7 +257,7 @@ verification:
     - name: data_survival
       checks:
       # The challenge consumer the contract layer requires: the receipt's top-level /pass
-      # asserted true (verifier_v2/contract.py:442-455), carrying NO evidence list. That
+      # asserted true (verifier/contract.py:442-455), carrying NO evidence list. That
       # split is load-bearing: on the no-declaration path the challenge is not run and the
       # receipt is the `applicable: false` shape, whose /pass resolves (false) but which
       # has no /data at all, so attaching evidence here would turn the intended nop FAIL
@@ -328,9 +303,7 @@ verification:
         observe: {artifact: challenge/database-survival.json, pointer: /protected_bundle/sha256}
         assert: {op: not_empty}
     require:
-    - correct_goodput
     - traffic_reconciliation
-    - service_health
     - repair_scope
     - data_survival
     - resource_ceiling
@@ -340,7 +313,7 @@ verification:
     artifacts:
       mutations: {artifact: derived/repair-scope.json, pointer: /changed_keys}
   report_assessment: {enabled: true, judge_required: false}
-  # `database_survival` (tools/verifier_v2/profiles/slack_database_survival_v1.py) is the
+  # `database_survival` (verifier/profiles/slack_database_survival_v1.py) is the
   # simplest challenge that restarts NOTHING: no broker, no pod replacement. That matters
   # mechanically here, and in the OPPOSITE direction from PR #408's env-armed probe: with
   # runtime arming a recreated pod would COME UP CLEAN and silently repair the fault under

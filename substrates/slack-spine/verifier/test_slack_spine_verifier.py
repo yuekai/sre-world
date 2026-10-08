@@ -3,10 +3,9 @@
 Run with:  uv run python -m pytest substrates/slack-spine/verifier/test_slack_spine_verifier.py -v
 
 Covers:
-  1. _verdict_to_rewards mapping (unit).
-  2. A SYNTHETIC GOLDEN rundir -> oracle.evaluate.evaluate_run -> overall=PASS.
-  3. A FAULTED rundir (no declare) and a WRONG-COMPONENT rundir -> FAIL.
-  4. The rundir-assembly layer with the kubectl/exec boundary MOCKED — asserts
+  1. A SYNTHETIC GOLDEN rundir -> oracle.evaluate.evaluate_run -> overall=PASS.
+  2. A FAULTED rundir (no declare) and a WRONG-COMPONENT rundir -> FAIL.
+  3. The rundir-assembly layer with the kubectl/exec boundary MOCKED — asserts
      one kubectl-cp PER grader file, helm-template-derived config_before, live
      /admin/config overlay for config_after, and a /healthz-derived docker_state.
 
@@ -485,43 +484,6 @@ def build_wrong_component_rundir(root: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# 1. _verdict_to_rewards (unit)
-# --------------------------------------------------------------------------- #
-
-def test_verdict_to_rewards_pass():
-    verdict = {"overall": "PASS", "gate1": {"pass": True},
-               "gate2": {"pass": True}, "minimality": {"pass": True},
-               "db_state": {"pass": True}}
-    assert SlackSpineVerifier._verdict_to_rewards(verdict) == {
-        "reward": 1.0, "gate1": 1.0, "gate2": 1.0, "minimality": 1.0,
-        "db_state": 1.0}
-
-
-def test_verdict_to_rewards_partial_fail():
-    verdict = {"overall": "FAIL", "gate1": {"pass": True},
-               "gate2": {"pass": False}, "minimality": {"pass": True},
-               "db_state": {"pass": True}}
-    assert SlackSpineVerifier._verdict_to_rewards(verdict) == {
-        "reward": 0.0, "gate1": 1.0, "gate2": 0.0, "minimality": 1.0,
-        "db_state": 1.0}
-
-
-def test_verdict_to_rewards_db_state_fail():
-    """A db_state failure surfaces as db_state=0.0 and overall reward 0.0."""
-    verdict = {"overall": "FAIL", "gate1": {"pass": True},
-               "gate2": {"pass": True}, "minimality": {"pass": True},
-               "db_state": {"pass": False}}
-    assert SlackSpineVerifier._verdict_to_rewards(verdict) == {
-        "reward": 0.0, "gate1": 1.0, "gate2": 1.0, "minimality": 1.0,
-        "db_state": 0.0}
-
-
-def test_verdict_to_rewards_missing_keys_fails_loudly():
-    with pytest.raises(RuntimeError, match="missing expected keys"):
-        SlackSpineVerifier._verdict_to_rewards({"overall": "PASS"})
-
-
-# --------------------------------------------------------------------------- #
 # 2 + 3. golden -> PASS ; faulted -> FAIL  (via the real vendored oracle)
 # --------------------------------------------------------------------------- #
 
@@ -536,21 +498,12 @@ def test_golden_rundir_passes(tmp_path):
         "roles.message.db.pool_size", "roles.message.db.max_overflow"}
 
 
-def test_golden_rundir_rewards_all_one(tmp_path):
-    verdict = evaluate_run(build_golden_rundir(tmp_path))
-    # 03-F1 has no db_state block in its manifest -> db_state passes vacuously.
-    assert SlackSpineVerifier._verdict_to_rewards(verdict) == {
-        "reward": 1.0, "gate1": 1.0, "gate2": 1.0, "minimality": 1.0,
-        "db_state": 1.0}
-
-
 def test_no_declare_rundir_fails(tmp_path):
     verdict = evaluate_run(build_no_declare_rundir(tmp_path))
     assert verdict["overall"] == "FAIL"
     assert verdict["gate1"]["pass"] is False
     assert verdict["gate2"]["pass"] is False  # no report filed
     assert "no resolution declared" in verdict["reasons"]
-    assert SlackSpineVerifier._verdict_to_rewards(verdict)["reward"] == 0.0
 
 
 def test_wrong_component_rundir_fails(tmp_path):

@@ -990,7 +990,7 @@ class CheckoutAsyncDriver(CheckoutReadbackDriver):
     (delivered by the Celery worker via the broker) must arrive back at the
     loadgen within ``wait_s``. A checkout whose synchronous flow succeeds but
     whose async artifact never lands records ok=False/correct=False — async
-    loss is graded by the SAME gate1 ratios as everything else.
+    loss is graded by the SAME error/goodput ratios as everything else.
     """
 
     name = "checkout_async"

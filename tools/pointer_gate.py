@@ -82,7 +82,7 @@ LEGACY_OUTCOME_TOP_KEYS = frozenset({"pass", "checks", "reasons", "window"})
 # artifact -> {pointer depth -> permitted key set}. Depth 1 is the first pointer
 # token, depth 2 the second. Anything deeper is scenario-specific and unchecked.
 DECIDABLE_ARTIFACTS: dict[str, dict[int, frozenset[str]]] = {
-    "derived/legacy-outcome.json": {
+    "derived/outcome.json": {
         1: LEGACY_OUTCOME_TOP_KEYS,
         2: LEGACY_OUTCOME_CHECK_KEYS,
     },
@@ -99,6 +99,9 @@ UNDECIDABLE_ARTIFACTS: dict[str, str] = {
     "derived/temporal-recurrence.json": "keys are per-event, scenario-defined",
     "derived/config-survivor.json": "keys are the surviving config paths",
     "derived/retry-amplification.json": "keys are per-path scrape targets",
+    "derived/redis-state.json": "keys are scenario-selected Redis probes and phases",
+    "derived/service-identity.json": "keys are the restart-identity services a task names",
+    "derived/task-verifier.json": "shape is owned by the scenario's own task_verifier",
 }
 
 
@@ -173,7 +176,7 @@ def _conditional_key_violation(
     Absent thresholds (a scenario mid-authoring) are treated as "cannot judge"
     rather than "violation" — the gate reports certainties only.
     """
-    if artifact != "derived/legacy-outcome.json" or not isinstance(thresholds, dict):
+    if artifact != "derived/outcome.json" or not isinstance(thresholds, dict):
         return None
     tokens = _tokens(pointer)
     if len(tokens) < 2 or tokens[0] != "checks":

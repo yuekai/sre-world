@@ -331,16 +331,17 @@ def load_field_scoped_exemplars(record: dict[str, Any]) -> dict[tuple[str, str],
     """
     out: dict[tuple[str, str], str] = {}
 
-    # Canonical positive for `instruction`: frappe `03-mariadb-read-only` — two
+    # Canonical positive for `instruction`: frappe `07-desk-and-queue-outage` — two
+    # (03-mariadb-read-only, the original anchor, was retired in 2026-10)
     # paragraphs only (the incident as a user reports it, then the declaration
     # window). The previous anchor, slack-spine 06-F3, carried method/scope/
     # "run --help" coaching that the user rejected as over-descriptive and
     # machine-sounding (2026-08-26); every existing frappe instruction was cut
     # to this shape in the same change, so the anchor and the corpus agree.
-    canonical = _extract_scenario_prose("03-mariadb-read-only")
+    canonical = _extract_scenario_prose("07-desk-and-queue-outage")
 
-    trap_exemplar = _extract_scenario_prose("03-QE1-rq-eviction-trap")
-    trapless_exemplar = _extract_scenario_prose("03-U1-user-conn-cap")
+    trap_exemplar = _extract_scenario_prose("07-writes-and-queue-oom")
+    trapless_exemplar = _extract_scenario_prose("07-desk-and-queue-oom")
     has_decoy = bool((record.get("knobs") or {}).get("decoys"))
     frappe_exemplars = (
         (trap_exemplar, trapless_exemplar) if has_decoy

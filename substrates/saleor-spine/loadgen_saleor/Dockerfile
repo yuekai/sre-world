@@ -4,7 +4,6 @@
 # BUILD CONTEXT: substrates/saleor-spine/ (build.sh stages every shared input
 # into the context first — same pattern as the frappe/slack-spine loadgen
 # images):
-#   .oracle-staged/          <- verifier/oracle (shared grading oracle)
 #   .loadgen-common-staged/  <- loadgen-common/ (shared /declare + /grader plane)
 #   .loadgen-core-staged/    <- loadgen-common/loadgen (the open-loop scheduling
 #                               core + DATA profiles.yaml the saleor drivers
@@ -32,7 +31,7 @@ WORKDIR /app
 # Shared: the scheduling core + the grader HTTP plane + the collector assemble
 # helpers (staged by build.sh). New task format (#91): the sidecar is an evidence
 # COLLECTOR — it imports evidence_collector directly (the frappe/slack pattern),
-# not an in-pod oracle. Grading runs verifier-side on the /grader/bundle.
+# not an in-pod grader. Grading runs verifier-side on the /grader/bundle.
 COPY .loadgen-core-staged/loadgen /app/loadgen
 COPY .loadgen-common-staged/loadgen_grader_common.py /app/loadgen_grader_common.py
 COPY .loadgen-common-staged/evidence_collector.py /app/evidence_collector.py

@@ -1,12 +1,17 @@
 {
+  "_reconstructed": "Digests are those pinned by the Incident Arena tasks (abundant-ai/incident-arena@fba011e); release names the GHCR tag those bytes carry.",
   "base": {
     "saleor-app": "sha256:d4d0581c2c2082a0a0f11e58dcf67f739cd8e20e83d953ff24d74e0791fc9f40",
-    "saleor-loadgen": "sha256:72cbed9e863d84dafd082218d6e6efb062e96c351d2ad4cd29bd5589be80b50d",
-    "saleor-main": "sha256:a15d460acdb30d58bfe36f04f537fc51ecc10570f9ed43c10c6e3d947e38c55b",
-    "saleor-obs-mcp": "sha256:2ba69e827fe2cf60a5aa96a57c6e3b98dee9666357046743f9c0afd7fa664d13"
+    "saleor-loadgen": "sha256:cdee1728463bbaa0c2665a809bb39b5c7919a48a4575fd629b3c4f6a857f812e",
+    "saleor-main": "sha256:ece6147d06e9f60750b33827302a063cebfa4112e1a37f002dd778b441c09ba5",
+    "saleor-obs-mcp": "sha256:5772f8a4e64b6030ff214837cf9376fbfe67e6659fbca6d595da6c2af855f309"
   },
   "platform": "linux/amd64",
-  "release": "v6",
+  "platform_tools": {
+    "digest": "sha256:c0ed85e5280e4d70c3ec341288fd240d2d64647d952db3712f94cd27c9c08d64",
+    "image": "codex-tools"
+  },
+  "release": "rc-saleor-spine-v9-d2cd71f7f59b",
   "schema_version": 2,
   "tasks": {}
 }

@@ -1,3 +1,6 @@
+# RECONSTRUCTED 2026-10: values below were brought in line with the Incident
+# Arena task generated from this scenario (tools/arena_backport.py). Comments
+# may still describe the 2026-09-19 version of the fault.
 # "Fix the cause, not the trigger" — the T5 twin of
 # 06-sends-fail-after-strict-mode-turns-on. Byte-for-byte the same overlay, the
 # same profile shape and the same evidence; ONE difference, and it is entirely in
@@ -46,13 +49,16 @@ task:
     temporal_emergence: true
     fault_presentation: "committed"
     report_vocabulary: true
-    profile: "sends_fail_during_compliance_window"
+    profile: "write_acl_push_loop_agent"
     episode_ready_gate: true
-    healthcheck_retries: 80
+    healthcheck_retries: 197
     ready_timeout_sec: 600
-    agent_timeout_sec: 3600
-    verifier_timeout_sec: 4980
+    agent_timeout_sec: 3930.0
+    verifier_timeout_sec: 4770.0
 
+    agent_window_s: 3600.0
+    soak_s: 180.0
+    build_timeout_sec: 2100.0
 substrate: "slack-spine"
 
 difficulty:
@@ -101,14 +107,22 @@ difficulty:
       # ground-truth.yaml.
       profilesYaml: |
         profiles:
-          sends_fail_during_compliance_window:
+          write_acl_push_loop_agent:
             base: write
             loop: true
-            declare_deadline_s: 4590.0
-            undeclared_evidence_min_s: 150.0
             events:
-              - {kind: admin_event, fire_at_s: 40.0, duration_s: 0.0, event_name: read_consistency_strict, target_service: svc-channel}
-              - {kind: admin_event, fire_at_s: 60.0, duration_s: 0.0, event_name: read_consistency_strict, target_service: svc-channel, anchor: declaration, event_id: strict_recheck_in_soak}
+            - kind: admin_event
+              fire_at_s: 40.0
+              duration_s: 0.0
+              event_name: read_consistency_strict
+              target_service: svc-channel
+            - kind: admin_event
+              fire_at_s: 60.0
+              duration_s: 0.0
+              event_name: read_consistency_strict
+              target_service: svc-channel
+              anchor: declaration
+              event_id: strict_recheck_in_soak
 
 # Tier-1 (config) overlay, byte-identical to the T4 twin. The pool pair is the only
 # CONFIG-KEY fault AND the only defect: the compliance window is a runtime entry in

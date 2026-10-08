@@ -75,6 +75,39 @@ spec:
       # which would make the verifier-only grader capability group-readable by
       # the agent. This one-shot init owns only the writable emptyDirs instead.
       initContainers:
+        {{- if .Values.platformTools.enabled }}
+        {{- $toolsImage := printf "ghcr.io/yuekai/sre-world/codex-tools@%s" .Values.platformTools.digest }}
+        {{- if and (ne .Values.global.imagePullPolicy "Never") (ne $toolsImage .Values.platformTools.image) }}
+        {{- fail "hosted platformTools.image must exactly equal the locked ghcr.io/yuekai/sre-world/codex-tools@digest identity" }}
+        {{- end }}
+        - name: codex-tools
+          image: {{ required "platformTools.image is required" .Values.platformTools.image | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["sh", "-ceu"]
+          args:
+            - |
+              cp -R /opt/harbor-agent-tools/. /staged-tools/
+              chmod -R a+rX /staged-tools
+              export PATH=/staged-tools/bin:/usr/local/bin:/usr/bin:/bin
+              command -v curl >/dev/null
+              command -v rg >/dev/null
+              command -v codex >/dev/null
+              codex --version
+              rg --version >/dev/null
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: codex-tools
+              mountPath: /staged-tools
+            - name: codex-tools-no-service-account
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+        {{- end }}
         - name: main-permissions
           image: {{ .Values.images.main | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
@@ -112,7 +145,20 @@ spec:
               }
               candidate="$1"
               cd "$(dirname "$candidate")"
-              exec "$candidate"
+              attempts=0
+              until [ -r "$candidate" ]; do
+                attempts=$((attempts + 1))
+                [ "$attempts" -lt 100 ] || {
+                  echo "solution dispatcher: uploaded solve.sh stayed unreadable" >&2
+                  exit 126
+                }
+                sleep 0.05
+              done
+              # Harbor uploads the golden directory through kubectl as the pod
+              # transport user, then launches the Oracle as uid 10001. The
+              # root-owned normalizer below makes only that transient upload
+              # readable; real agent runs never receive a harbor_* directory.
+              exec /bin/bash "$candidate"
               HARBOR_SOLUTION_DISPATCH
               chmod 0755 /solution/solve.sh
               # The stock shared verifier has the same upload-dir/fixed-path
@@ -128,7 +174,7 @@ spec:
               }
               candidate="$1"
               cd "$(dirname "$candidate")"
-              exec "$candidate"
+              exec /bin/bash "$candidate"
               HARBOR_TEST_DISPATCH
               chmod 0700 /tests/test.sh
               # `install -o` performs chmod after chown, which needs CAP_FOWNER
@@ -180,7 +226,8 @@ spec:
                 test -w /home/agent
                 install -d -m 0700 /home/agent/.kube
                 kubectl config set-cluster in-cluster \
-                  --server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}" \
+                  --server="https://agent-kube-api-proxy.{{ .Release.Namespace }}.svc:8443" \
+                  --tls-server-name=kubernetes.default.svc \
                   --certificate-authority="$ca" --embed-certs=true >/dev/null
                 kubectl config set-credentials main --token="$(cat "$token")" >/dev/null
                 kubectl config set-context main --cluster=in-cluster --user=main \
@@ -190,6 +237,21 @@ spec:
                 test "$(stat -c %a "$KUBECONFIG")" = 600
               '
               {{- end }}
+              # Normalize only Harbor's transient golden-solution upload. The
+              # Oracle runs as the unprivileged agent, while kubectl cp extracts
+              # as this container's root transport user. Without this bridge a
+              # mode/owner combination that is valid on the host can arrive
+              # unreadable and make the Oracle exit 126 before testing the task.
+              # /solution itself stays root-owned and non-writable to agents.
+              (
+                while true; do
+                  for uploaded in /solution/harbor_*; do
+                    [ -d "$uploaded" ] || continue
+                    chmod -R a+rX "$uploaded"
+                  done
+                  sleep 0.05
+                done
+              ) &
               exec sleep infinity
           securityContext:
             # Stock Harbor bootstraps OS packages as root before it switches to
@@ -204,13 +266,16 @@ spec:
               # allowPrivilegeEscalation false it cannot acquire these caps.
               add: ["CHOWN", "FOWNER", "SETUID", "SETGID"]
           env:
+            {{- if .Values.platformTools.enabled }}
+            - name: PATH
+              value: "/opt/harbor-agent-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            {{- end }}
             # kubectl cp streams a host-created tar archive into this
             # capability-dropped root container. Never import the host runner's
             # uid/gid: preserving ownership would require CAP_CHOWN and is not
             # part of the file-transfer contract.
             - name: TAR_OPTIONS
               value: "--no-same-owner"
-            {{- if not (or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled) }}
             - name: AGENT_EGRESS_PROXY_PORT
               value: {{ .Values.agentEgressProxy.port | quote }}
             - name: HTTP_PROXY
@@ -225,7 +290,6 @@ spec:
               value: {{ .Values.agentEgressProxy.noProxy | quote }}
             - name: no_proxy
               value: {{ .Values.agentEgressProxy.noProxy | quote }}
-            {{- end }}
             {{- if or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled }}
             - name: KUBECONFIG
               value: /home/agent/.kube/config
@@ -276,10 +340,14 @@ spec:
           resources:
             {{- include "slack.resources" (dict "root" $ "key" "main") | nindent 12 }}
           volumeMounts:
+            {{- if .Values.platformTools.enabled }}
+            - name: codex-tools
+              mountPath: /opt/harbor-agent-tools
+              readOnly: true
+            {{- end }}
             - name: grader-access
               mountPath: /run/verifier/grader-access
               readOnly: true
-            {{- if not (or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled) }}
             - name: agent-egress-cutover-token
               mountPath: /run/agent-egress-cutover
               readOnly: true
@@ -287,7 +355,6 @@ spec:
               mountPath: /usr/local/bin/set-agent-egress-phase
               subPath: set-agent-egress-phase
               readOnly: true
-            {{- end }}
             - name: tmp
               mountPath: /tmp
             - name: agent-home
@@ -326,6 +393,11 @@ spec:
           env:
             - name: GRADER_ACCESS_TOKEN_FILE
               value: /run/grader-access/token
+            # Compatibility with already-published main images: their freezer
+            # still contains the retired uid-observation opener. Disable it;
+            # Harbor's environment healthcheck owns the opening boundary.
+            - name: EPISODE_START_ENABLED
+              value: "0"
           ports:
             - name: freeze
               containerPort: 9101
@@ -334,12 +406,17 @@ spec:
               mountPath: /run/grader-access
               readOnly: true
       volumes:
+        {{- if .Values.platformTools.enabled }}
+        - name: codex-tools
+          emptyDir: {}
+        - name: codex-tools-no-service-account
+          emptyDir: {}
+        {{- end }}
         - name: grader-access
           secret:
             secretName: loadgen-grader-access
             # The agent is uid 10001; only the root verifier can read this file.
             defaultMode: 0400
-        {{- if not (or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled) }}
         - name: agent-egress-cutover-token
           secret:
             secretName: agent-egress-cutover-auth
@@ -348,7 +425,6 @@ spec:
           configMap:
             name: agent-egress-cutover
             defaultMode: 0555
-        {{- end }}
         - name: tmp
           emptyDir: {}
         - name: agent-home

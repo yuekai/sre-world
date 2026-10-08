@@ -74,7 +74,7 @@ def test_poison_partition_temporal_profile_contract() -> None:
     assert profile.soak_cycles == 2
     primary, recurrence, transient = profile.events
     assert (primary.event_id, primary.anchor, primary.required) == (
-        "primary-poison", "episode", True
+        "primary-poison", "bringup", True
     )
     assert primary.release_agent_on_recovery is True
     assert primary.followers == 4
@@ -119,7 +119,7 @@ def test_commit_after_timeout_temporal_profile_contract() -> None:
         initial.anchor,
         initial.operation_budget,
         initial.release_agent_on_recovery,
-    ) == ("commit_timeout_event", "episode", 3, True)
+    ) == ("commit_timeout_event", "bringup", 3, True)
     assert (
         challenge.kind,
         challenge.anchor,
@@ -138,22 +138,17 @@ def test_maintenance_collision_temporal_profile_contract() -> None:
     assert (event.kind, event.event_id, event.required) == (
         "maintenance_epoch", "primary-maintenance-collision", True
     )
+    assert event.anchor == "bringup"
     assert event.require_manifestation is True
     assert event.release_agent_on_recovery is True
 
 
-def test_audited_long_profiles_have_explicit_undeclared_evidence_floors() -> None:
-    assert PROFILES["write_eval"].undeclared_evidence_min_s == 150.0
-    assert PROFILES["write_retry_storm25"].undeclared_evidence_min_s == 150.0
-    assert PROFILES["write_load_a25"].undeclared_evidence_min_s == 150.0
-    assert PROFILES["eval25"].undeclared_evidence_min_s is None
-    assert (
-        PROFILES["eval25"].effective_undeclared_evidence_min_s()
-        == PROFILES["eval25"].declare_deadline_s
-    )
+def test_retired_undeclared_evidence_floors_are_absent() -> None:
+    for name in ("write_eval", "write_retry_storm25", "write_load_a25", "eval25"):
+        assert PROFILES[name].undeclared_evidence_min_s is None
 
 
-def test_task_specific_long_profiles_inherit_audited_floors(tmp_path: Path) -> None:
+def test_task_specific_long_profiles_do_not_restore_retired_floors(tmp_path: Path) -> None:
     overlay = tmp_path / "profiles.yaml"
     overlay.write_text(
         """profiles:
@@ -169,10 +164,7 @@ def test_task_specific_long_profiles_inherit_audited_floors(tmp_path: Path) -> N
 """
     )
     resolved = load_profiles(overlay, PROFILES)
-    assert resolved["poison_partition_temporal_1h"].undeclared_evidence_min_s == 70.0
-    assert (
-        resolved["maintenance_collision_temporal_1h"].undeclared_evidence_min_s
-        == 150.0
-    )
-    assert resolved["p1_shell_distractor_eval_1h"].undeclared_evidence_min_s == 870.0
+    assert resolved["poison_partition_temporal_1h"].undeclared_evidence_min_s is None
+    assert resolved["maintenance_collision_temporal_1h"].undeclared_evidence_min_s is None
+    assert resolved["p1_shell_distractor_eval_1h"].undeclared_evidence_min_s is None
     assert all(profile.declare_deadline_s == 3630.0 for profile in resolved.values())

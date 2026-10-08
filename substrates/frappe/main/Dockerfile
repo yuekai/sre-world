@@ -59,6 +59,7 @@ RUN set -eux; \
 # is Frappe-flavoured (a helm-upgrade wrapper vs. Slack's Postgres wrapper).
 COPY restart-svc.sh        /usr/local/bin/restart-svc.sh
 COPY submit_incident_report /usr/local/bin/submit_incident_report
+COPY declare_repair_complete /usr/local/bin/declare_repair_complete
 COPY reconfigure-infra.sh   /usr/local/bin/reconfigure-infra.sh
 COPY agent_freezer.py       /usr/local/lib/sre-world/agent_freezer.py
 
@@ -66,9 +67,11 @@ RUN set -eux; \
     chmod +x \
         /usr/local/bin/restart-svc.sh \
         /usr/local/bin/submit_incident_report \
+        /usr/local/bin/declare_repair_complete \
         /usr/local/bin/reconfigure-infra.sh; \
     # Syntax-check every shipped script at build time (fail loudly on a typo).
     bash -n /usr/local/bin/restart-svc.sh; \
     bash -n /usr/local/bin/submit_incident_report; \
+    bash -n /usr/local/bin/declare_repair_complete; \
     bash -n /usr/local/bin/reconfigure-infra.sh
 RUN python3 -m py_compile /usr/local/lib/sre-world/agent_freezer.py

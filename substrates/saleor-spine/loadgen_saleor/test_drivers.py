@@ -465,19 +465,21 @@ def test_async_profile_registered_with_async_driver():
     p = PROFILES["saleor_async_dev"]
     assert p.drivers == ["browse", "browse", "browse", "checkout_async"]
     assert p.declare_deadline_s == 170.0
-    assert p.effective_undeclared_evidence_min_s() == 170.0
+    assert p.undeclared_evidence_min_s is None
+    assert not hasattr(p, "effective_undeclared_evidence_min_s")
 
 
-def test_long_agent_windows_inherit_fast_nop_floor():
-    for name, deadline_s in (
-        ("saleor_eval", 1910.0),
-        ("saleor_async_temporal_eval", 1910.0),
-        ("saleor_eval_ext", 2490.0),
-        ("saleor_async_temporal_eval_ext", 2490.0),
+def test_long_agent_windows_share_the_short_profile_drivers():
+    """D28 removes undeclared runs; long profiles differ only in resolved length."""
+    for fast, long_variants in (
+        ("saleor_dev", ("saleor_eval", "saleor_eval_ext")),
+        (
+            "saleor_async_dev",
+            ("saleor_async_temporal_eval", "saleor_async_temporal_eval_ext"),
+        ),
     ):
-        profile = PROFILES[name]
-        assert profile.declare_deadline_s == deadline_s
-        assert profile.effective_undeclared_evidence_min_s() == 170.0
+        for name in long_variants:
+            assert PROFILES[name].drivers == PROFILES[fast].drivers, name
 
 
 # --------------------------------------------------------------------------- #

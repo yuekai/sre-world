@@ -8,8 +8,8 @@ fault:
   # are the baseline the sidecar renders as config_before, and golden_fix is the
   # peer-uniform healthy pair (chart values.yaml:167 — every role ships 20/10). The
   # repair_scope pack below bounds the repair from BOTH sides: ceilings (<= 20 / <= 10)
-  # so nobody buys headroom, and floors (>= 10 / >= 5) so the latent defect must
-  # actually be repaired and stay repaired.
+  # so nobody buys headroom, and floors (>= 20 / >= 10) so the latent defect must
+      # actually be repaired and stay repaired.
   file: sut/config/app.yaml
   injected: {roles.channel.db.pool_size: 12, roles.channel.db.max_overflow: 2}
   golden_fix: {roles.channel.db.pool_size: 20, roles.channel.db.max_overflow: 10}
@@ -133,24 +133,10 @@ thresholds:
   # and agent trials.
   provisional: true
   latency_percentile: 90
-  # WIDENED from PR #385's 462 / 467 — deliberately, and this is the load-bearing
-  # trade in the design. The post-declare re-trigger (see spec.yaml) turns strict
-  # mode back on 60 s after the declaration, so for half of the graded soak the send
-  # path runs event-ON with a HEALTHY pool. That configuration measures 584 / 585 ms
-  # p90 (#386 run 33099873374), so 462 / 467 would fail this task's own oracle. 800
-  # admits it with ~27% headroom on a shared runner.
-  #
-  # MEASURED on the sibling's own fence (PR #411, run 33116522704): the golden's soak
-  # sits at 547.3 / 552.4 ms p90 — the event-active regime, ~31% inside the 800 band —
-  # with soak error_rate 0.0000 and goodput 1.0000. This task's golden leaves the SAME
-  # state behind (event ON via the re-trigger, pool restored to 20/10), so the bands are
-  # INHERITED UNCHANGED. They are not retuned for the milder 12/2 dose.
-  #
-  # Discrimination does NOT rest on this band. On the sibling's 3/2 the unrepaired pool
-  # measured 10453.2 / 9019.1 ms p90 with error rate 1.0 and goodput 0.0 (run
-  # 33116522704, nop cell). At 12/2 the shortfall is 25% rather than 250%, so the nop
-  # may land far closer to the band; the error-rate / goodput floors below carry the
-  # discrimination, and whichever check the nop actually fails is the finding.
+  # Inherited unchanged from the sibling. The stricter event-active healthy-pool
+  # reference measured 547.3 / 552.4 ms p90, so the repaired event-inactive state has
+  # ample room. Discrimination for the runtime defect is now a protected direct-state
+  # check, not a task-local SLI exception.
   p99_ms_by_phase: {peak: 800, trough: 800}
   # TIGHTENED from #385's 0.1 / 0.8. Measured healthy AND measured event-only are
   # 0.0 / 1.0; the unrepaired latent pool is 1.0 / 0.0. Nothing between those two
@@ -160,10 +146,7 @@ thresholds:
   # Drop the first 30 s of the soak from the LATENCY window: the golden's
   # `restart-svc.sh channel` reload lands at declaration and its transient is not a
   # fault symptom (13-P1's precedent; the `write` profile ships soak_cycles=2 for
-  # exactly this). The declare+60 s re-trigger lands on the far side of it, so the
-  # settle window and the re-fire never overlap. error_rate / goodput are NOT
-  # settled — they grade the full soak, which is what makes an unrepaired pool fail
-  # on ~half the graded window rather than on latency alone.
+  # exactly this). Error rate / goodput still grade the full soak.
   latency_settle_s: 30
   # NOT waived: neither defect takes the data plane down in a way a restart repairs,
   # so a restart without a persisted config diff is restart-masking. The audit's
@@ -180,12 +163,19 @@ thresholds:
 dwell_cycles: 1
 soak_cycles: 2
 
+# Protected loadgen-sidecar GETs capture the live event registry after the terminal
+# agent boundary and again at soak end. Missing/unreachable/malformed evidence aborts
+# evidence collection; contract pointers below also fail closed if either phase is absent.
+runtime_state:
+  service: channel
+  endpoint: /admin/event
+  capture_phases: [declaration, soak_end]
+
 verification:
   version: 2
   materializers:
-  - incident_report
   - repair_scope
-  - legacy_outcome
+  - outcome
   - traffic_reconciliation
   public_requirements:
   - id: CP-OUT-1
@@ -194,44 +184,30 @@ verification:
     text: Channel-path capacity and delay remain inside the existing safe envelope, and protected PostgreSQL resource, timeout, durability, and maintenance guardrails remain intact.
   - id: CP-CAP-1
     text: Channel-path connection capacity is restored to at least the working level its peer roles run at, and is still there at the end of the sustained recovery period.
+  - id: CP-STATE-1
+    text: Strict read consistency is inactive at declaration and remains inactive through the sustained recovery period.
   - id: CP-DATA-1
     text: Pre-agent records and successfully offered writes survive unchanged.
   - id: CP-EVID-1
     text: Final verification runs behind a terminal agent boundary and its receipt is bound to the finalized evidence bundle.
   - id: CP-COMPLETE-1
-    text: One non-null report freezes the agent and starts final verification.
-  - id: C-D-1
-    text: Submit exactly one non-null incident report containing exactly 2 findings to finish and freeze the run; `submit_incident_report` is the supported interface, and the findings must name service channel and component channel.membership-acl; service channel and component channel.db-pool using the published vocabulary, with no extra and no missing finding. Mechanism prose is advisory.
-  completion:
-    required: true
-    requirement_ids: [CP-COMPLETE-1, C-D-1]
-    summary: A non-null report with the required canonical two-pair attribution completed and froze the run.
+    text: The agent is frozen at the end of its window and final verification runs behind that boundary.
   outcome:
     checks:
-    - id: canonical_report_shape
-      requirement_ids: [C-D-1]
-      summary: The incident report uses the canonical findings envelope with exactly 2 complete findings.
-      observe: {artifact: derived/incident-report.json, pointer: /pass}
-      assert: {op: equals, value: true}
-    - id: canonical_report_set
-      requirement_ids: [C-D-1]
-      summary: The incident report names exactly the answer-key set of (service, component) pairs — a missing pair and an extra pair both fail.
-      observe: {artifact: derived/incident-report.json, pointer: /pairs}
-      assert: {op: set_equals, value: ["channel/channel.membership-acl", "channel/channel.db-pool"]}
     - id: sustained_latency
       requirement_ids: [CP-OUT-1]
       summary: Peak and trough p90 message-write latency satisfy the disclosed two-cycle limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency/pass}
       assert: {op: equals, value: true}
     - id: sustained_error_rate
       requirement_ids: [CP-OUT-1]
       summary: Message-write error rate satisfies the disclosed limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/error_rate/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/error_rate/pass}
       assert: {op: equals, value: true}
     - id: sustained_correct_goodput
       requirement_ids: [CP-OUT-1]
       summary: Correct message-write goodput satisfies the disclosed floor.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/goodput/pass}
       assert: {op: equals, value: true}
     # The send lane read explicitly, so the declared per-driver band is consumed
     # rather than decorative. The write_readback driver IS the send journey
@@ -240,12 +216,12 @@ verification:
     - id: sustained_send_lane
       requirement_ids: [CP-OUT-1]
       summary: The message-send lane on its own satisfies the disclosed per-lane goodput floor and error-rate limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/by_driver/per_driver/write_readback/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/by_driver/per_driver/write_readback/pass}
       assert: {op: equals, value: true}
     - id: required_services_running
       requirement_ids: [CP-OUT-1]
       summary: Every required service is running at final collection.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
+      observe: {artifact: derived/outcome.json, pointer: /checks/services_up/value/all_running}
       assert: {op: equals, value: true}
     - id: offered_work_reconciled
       requirement_ids: [CP-OUT-1]
@@ -254,13 +230,6 @@ verification:
       assert: {op: equals, value: true}
   safe_repair:
     packs:
-    - name: correct_goodput
-      checks:
-      - id: correct_writes
-        requirement_ids: [CP-OUT-1]
-        summary: Offered writes complete with the published correct-goodput ratio.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
-        assert: {op: equals, value: true}
     - name: traffic_reconciliation
       checks:
       - id: no_suppression
@@ -273,51 +242,50 @@ verification:
         summary: Every arrival across the complete immutable traffic ledger is represented by the recorded accounting totals.
         observe: {artifact: derived/traffic-reconciliation.json, pointer: /complete_accounting}
         assert: {op: equals, value: true}
-    - name: service_health
-      checks:
-      - id: required_services_up
-        requirement_ids: [CP-OUT-1]
-        summary: Every required service remains healthy through the soak.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
-        assert: {op: equals, value: true}
     - name: repair_scope
       checks:
+      - id: only_channel_pool_keys_changed
+        requirement_ids: [CP-SCOPE-1]
+        summary: Any protected configuration changes are confined to the two channel-pool capacity keys.
+        observe: {artifact: derived/repair-scope.json, pointer: /changed_keys}
+        assert:
+          op: subset_of
+          value:
+          - yaml:sut/config/app.yaml.roles.channel.db.pool_size
+          - yaml:sut/config/app.yaml.roles.channel.db.max_overflow
       # --- FLOORS: the LATENT defect's repair-state probe. -------------------
       # These four are the second grading of defect B (fairness device 3) and the
       # deterministic half-fix witness (device 4): an agent who clears the runtime
       # toggle and declares leaves pool_size 12 / max_overflow 2 here and fails, at
-      # declaration AND at soak end, whatever the re-trigger does. This matters MORE at
+      # declaration AND at soak end, independent of outcome variance. This matters MORE at
       # a plausible value than at the sibling's 3/2: a 25% capacity shortfall may not
       # collapse the outcome bands on its own, so the state probe is the check that
-      # makes B graded rather than decorative. A RANGE, not an equality: any capacity
-      # from the peer working level up to the peer ceiling is an acceptable repair.
+      # makes B graded rather than decorative. Matching peer floors and ceilings require
+      # the known working 20/10 pair without permitting capacity inflation.
       #
-      # NOTE, and it is a real consequence of the plausible value: the injected
-      # pool_size of 12 already SATISFIES `>= 10`. The floor that BINDS on an
-      # unrepaired B here is `max_overflow >= 5` against the injected 2, at
-      # declaration and at soak end. The pool_size floors are kept unchanged from the
-      # sibling anyway — they cost nothing, they fence a repair that lowers pool_size,
-      # and keeping the four checks identical is what makes the two tasks comparable.
+      # The peer working level is the peer-uniform 20/10 pair. Requiring that exact
+      # floor at declaration and soak end makes either unrepaired injected value fail;
+      # the matching ceilings below prevent buying excess headroom.
       - id: channel_pool_size_floor_at_declaration
         requirement_ids: [CP-CAP-1]
         summary: Channel pool capacity is restored to at least the peer working level at declaration.
         observe: {artifact: derived/repair-scope.json, pointer: /phases/declaration/yaml:sut~1config~1app.yaml.roles.channel.db.pool_size}
-        assert: {op: gte, value: 10}
+        assert: {op: gte, value: 20}
       - id: channel_overflow_floor_at_declaration
         requirement_ids: [CP-CAP-1]
         summary: Channel overflow capacity is restored to at least the peer working level at declaration.
         observe: {artifact: derived/repair-scope.json, pointer: /phases/declaration/yaml:sut~1config~1app.yaml.roles.channel.db.max_overflow}
-        assert: {op: gte, value: 5}
+        assert: {op: gte, value: 10}
       - id: channel_pool_size_floor_at_soak
         requirement_ids: [CP-CAP-1]
         summary: Channel pool capacity is still at least the peer working level at the end of the soak.
         observe: {artifact: derived/repair-scope.json, pointer: /phases/soak_end/yaml:sut~1config~1app.yaml.roles.channel.db.pool_size}
-        assert: {op: gte, value: 10}
+        assert: {op: gte, value: 20}
       - id: channel_overflow_floor_at_soak
         requirement_ids: [CP-CAP-1]
         summary: Channel overflow capacity is still at least the peer working level at the end of the soak.
         observe: {artifact: derived/repair-scope.json, pointer: /phases/soak_end/yaml:sut~1config~1app.yaml.roles.channel.db.max_overflow}
-        assert: {op: gte, value: 5}
+        assert: {op: gte, value: 10}
       # --- CEILINGS: PR #385's eight, unchanged. -----------------------------
       - id: channel_pool_size_ceiling_at_declaration
         requirement_ids: [CP-SCOPE-1]
@@ -364,10 +332,20 @@ verification:
         summary: Protected PostgreSQL settings, role/database settings, and file settings match their pre-agent state.
         observe: {artifact: challenge/database-survival.json, pointer: /data/scope/pass}
         assert: {op: equals, value: true}
+      - id: strict_mode_inactive_at_declaration
+        requirement_ids: [CP-STATE-1]
+        summary: Protected declaration-time state proves no runtime consistency event remains active on channel.
+        observe: {artifact: config_at_declare.json, pointer: /runtime_state/active}
+        assert: {op: set_equals, value: []}
+      - id: strict_mode_inactive_at_soak_end
+        requirement_ids: [CP-STATE-1]
+        summary: Protected soak-end state proves no runtime consistency event was restored after declaration.
+        observe: {artifact: config_at_soak_end.json, pointer: /runtime_state/active}
+        assert: {op: set_equals, value: []}
     - name: data_survival
       checks:
       # This is the challenge consumer the contract layer requires: the receipt's
-      # top-level /pass asserted true (verifier_v2/contract.py:442-455). It carries
+      # top-level /pass asserted true (verifier/contract.py:442-455). It carries
       # NO evidence list, and that is load-bearing. On the no-declaration path the
       # challenge is not run and the receipt is the `applicable: false` shape, whose
       # /pass IS present (false) but which has no /data at all. checks.py:255-311
@@ -417,9 +395,7 @@ verification:
         observe: {artifact: challenge/database-survival.json, pointer: /protected_bundle/sha256}
         assert: {op: not_empty}
     require:
-    - correct_goodput
     - traffic_reconciliation
-    - service_health
     - repair_scope
     - data_survival
     - resource_ceiling
@@ -430,7 +406,7 @@ verification:
       mutations: {artifact: derived/repair-scope.json, pointer: /changed_keys}
   report_assessment: {enabled: true, judge_required: false}
   # The simplest existing challenge that restarts NOTHING: `database_survival`
-  # (tools/verifier_v2/profiles/slack_database_survival_v1.py) renders the same
+  # (verifier/profiles/slack_database_survival_v1.py) renders the same
   # private pre-agent data canary the checkpoint challenge uses
   # (challenge_generation.py:45-47 routes both through _apply_database_survivor),
   # needs no broker, and runs no pod replacement — which matters here because a

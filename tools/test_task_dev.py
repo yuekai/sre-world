@@ -16,6 +16,7 @@ from tools.task_dev.core import (
     _change_endpoints,
     _uses_oracle_source,
     _uses_temporal_oracle_source,
+    _uses_v2_verifier_source,
     _v2_requires_calibration,
     qualification_fingerprints,
 )
@@ -90,7 +91,7 @@ def repo(tmp_path: Path) -> Path:
     _write(tmp_path / "substrates/alpha/substrate.yaml", yaml.safe_dump(manifest))
     _write(tmp_path / "substrates/alpha/chart/values.yaml", "app: {bad: false}\n")
     _write(tmp_path / "loadgen-common/loadgen/profiles.yaml", "dev: {rps: 1}\n")
-    _write(tmp_path / "verifier/oracle.py", "def evaluate(): return True\n")
+    _write(tmp_path / "verifier/oracle/oracle.py", "def evaluate(): return True\n")
     for sid in ("one", "two"):
         root = tmp_path / f"scenarios/alpha/{sid}"
         _write(root / "spec.yaml", yaml.safe_dump(_spec(sid), sort_keys=False))
@@ -960,7 +961,9 @@ def test_v2_temporal_source_selection_is_exact(
     gt["temporal"] = {"kind": "poison_message_recurrence"}
     _write(gt_path, yaml.safe_dump(gt, sort_keys=False))
     state = State(repo, WORKTREE)
-    assert _uses_temporal_oracle_source(
+    # The v2 temporal provider lives inside the verifier package now; a v2 task
+    # selects no v1 oracle_temporal source at all.
+    assert not _uses_temporal_oracle_source(
         state, "alpha", "one", "verifier/oracle_temporal/temporal.py"
     )
     assert not _uses_temporal_oracle_source(
@@ -969,11 +972,23 @@ def test_v2_temporal_source_selection_is_exact(
     assert not _uses_temporal_oracle_source(
         state, "alpha", "two", "verifier/oracle_temporal/temporal.py"
     )
+    assert _uses_v2_verifier_source(
+        state, "alpha", "one", "verifier/providers/temporal.py"
+    )
+    assert _uses_v2_verifier_source(
+        state, "alpha", "one", "verifier/materializers/temporal_recurrence.py"
+    )
+    assert not _uses_v2_verifier_source(
+        state, "alpha", "one", "verifier/materializers/outcome.py"
+    )
+    assert not _uses_v2_verifier_source(
+        state, "alpha", "two", "verifier/providers/temporal.py"
+    )
 
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "add v2 temporal consumer")
     _write(
-        repo / "tools/verifier_v2/providers/worker_policy_survivor.py",
+        repo / "verifier/providers/worker_policy_survivor.py",
         "def evaluate_worker_policy_survivor(): return True\n",
     )
     monkeypatch.setattr(
@@ -992,8 +1007,8 @@ def test_v2_temporal_source_selection_is_exact(
     assert "verifier-implementation" in impact["affected_tasks"][0]["change_classes"]
 
 
-def _make_v2_legacy_outcome(repo: Path, sid: str) -> None:
-    """Turn one fixture task into a v2 task whose closure selects legacy_outcome."""
+def _make_v2_outcome(repo: Path, sid: str) -> None:
+    """Turn one fixture task into a v2 task whose closure selects outcome."""
 
     gt_path = repo / f"scenarios/alpha/{sid}/ground-truth.yaml"
     gt = yaml.safe_load(gt_path.read_text())
@@ -1010,7 +1025,7 @@ def _make_v2_legacy_outcome(repo: Path, sid: str) -> None:
                     "requirement_ids": ["OUT-1"],
                     "summary": "Correct work completed",
                     "observe": {
-                        "artifact": "derived/legacy-outcome.json",
+                        "artifact": "derived/outcome.json",
                         "pointer": "/checks/services_up/value/all_running",
                     },
                     "assert": {"op": "equals", "value": True},
@@ -1037,7 +1052,7 @@ def _make_v2_legacy_outcome(repo: Path, sid: str) -> None:
             ],
             "require": ["config_survivor"],
         },
-        "materializers": ["legacy_outcome"],
+        "materializers": ["outcome"],
     }
     _write(gt_path, yaml.safe_dump(gt, sort_keys=False))
 
@@ -1049,9 +1064,9 @@ def test_plain_verifier_change_skips_v2_tasks_outside_their_closure(
     packages must not fan out onto it — while v1 tasks, whose grader hash is
     every .py under verifier/, must still be marked."""
 
-    _make_v2_legacy_outcome(repo, "one")
+    _make_v2_outcome(repo, "one")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", "make alpha/one a v2 legacy_outcome task")
+    _git(repo, "commit", "-qm", "make alpha/one a v2 outcome task")
 
     state = State(repo, WORKTREE)
     # Outside alpha/one's closure: shipped by neither its fingerprint nor its
@@ -1062,8 +1077,11 @@ def test_plain_verifier_change_skips_v2_tasks_outside_their_closure(
     assert _uses_oracle_source(
         state, "alpha", "two", "verifier/oracle_p1/runtime_state.py"
     )
-    # Inside alpha/one's closure: legacy_outcome selects it as an external source.
-    assert _uses_oracle_source(state, "alpha", "one", "verifier/oracle/outcome.py")
+    # The outcome provider now lives inside the verifier package, so the v1
+    # oracle's outcome module is outside alpha/one's closure and the in-package
+    # provider is inside it.
+    assert not _uses_oracle_source(state, "alpha", "one", "verifier/oracle/outcome.py")
+    assert _uses_oracle_source(state, "alpha", "one", "verifier/providers/outcome.py")
 
     _write(
         repo / "verifier/oracle_p1/runtime_state.py",
@@ -1072,6 +1090,21 @@ def test_plain_verifier_change_skips_v2_tasks_outside_their_closure(
     impact = classify(repo=repo)
     assert {row["task"] for row in impact["affected_tasks"]} == {"alpha/two"}
     assert "verifier-implementation" in impact["affected_tasks"][0]["change_classes"]
+
+
+def test_contract_from_an_older_grading_model_counts_as_affected(repo: Path) -> None:
+    """A base-side v2 contract the current verifier rejects must not crash
+    classification; its closure is unknowable, so the path counts as used."""
+
+    _make_v2_outcome(repo, "one")
+    gt_path = repo / "scenarios/alpha/one/ground-truth.yaml"
+    gt = yaml.safe_load(gt_path.read_text())
+    gt["verification"]["materializers"] = ["legacy_outcome"]  # retired name
+    _write(gt_path, yaml.safe_dump(gt, sort_keys=False))
+    state = State(repo, WORKTREE)
+
+    assert _uses_v2_verifier_source(state, "alpha", "one", "verifier/providers/outcome.py")
+    assert _uses_oracle_source(state, "alpha", "one", "verifier/oracle_p1/runtime_state.py")
 
 
 def _commit_temporal_consumer(repo: Path, sid: str = "one") -> Path:
@@ -1108,7 +1141,7 @@ def test_temporal_source_rename_to_root_test_keeps_old_consumer(repo: Path) -> N
 def test_shared_source_rename_to_temporal_keeps_all_old_consumers(repo: Path) -> None:
     destination = repo / "verifier/oracle_temporal/outcome.py"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    (repo / "verifier/oracle.py").rename(destination)
+    (repo / "verifier/oracle/oracle.py").rename(destination)
 
     impact = classify(repo=repo)
     assert {row["task"] for row in impact["affected_tasks"]} == {
@@ -1151,9 +1184,9 @@ def test_selector_removal_and_source_modification_keeps_old_consumer(repo: Path)
 def test_change_endpoints_treats_copy_as_destination_only(repo: Path) -> None:
     old_state = State(repo, "HEAD")
     new_state = State(repo, WORKTREE)
-    change = Change("C", "verifier/oracle.py", "verifier/oracle_copy.py")
+    change = Change("C", "verifier/oracle/oracle.py", "verifier/oracle/oracle_copy.py")
     assert _change_endpoints(change, old_state, new_state) == (
-        (new_state, "verifier/oracle_copy.py"),
+        (new_state, "verifier/oracle/oracle_copy.py"),
     )
 
 

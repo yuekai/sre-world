@@ -17,7 +17,7 @@ image by build.sh). Only the Frappe-specific pieces live here:
   * ``parse_metrics`` — Frappe/MariaDB gauge names written to finalized evidence.
 
 MariaDB capture/postprocess lives in ``grader_hooks.py`` (substrate-owned).
-This process collects only evidence; the committed task-local oracle grades it.
+This process collects only evidence; the committed task-local verifier grades it.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import shutil
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ import httpx  # noqa: E402
 import yaml  # noqa: E402
 from prometheus_client.parser import text_string_to_metric_families  # noqa: E402
 
-from loadgen.runner import DRIVERS, LoadGen  # noqa: E402
+from loadgen.runner import DRIVERS, LoadGen, agent_window_s  # noqa: E402
 from loadgen.schedule import PROFILES as BUILTIN_PROFILES  # noqa: E402
 
 # Shared HTTP wiring + path constants (D16 Phase 0 extraction).
@@ -57,7 +58,6 @@ from loadgen_grader_common import (  # noqa: E402
     CONFIG_AT_SUBMISSION_JSON,
     CONFIG_AFTER_FREEZE_JSON,
     AGENT_BOUNDARY_JSON,
-    UNDECLARED_FINALIZATION_JSON,
     EPISODE_DONE_JSON,
     META_JSON,
     METRICS_JSONL,
@@ -65,9 +65,8 @@ from loadgen_grader_common import (  # noqa: E402
     REPORT_JSON,
     build_grader_app as _build_grader_app_common,
     load_grader_access_token,
+    pin_episode_t0,
     request_agent_freeze,
-    write_undeclared_finalization_receipt,
-    _validate_declare_body,
     _write_report,
 )
 
@@ -108,6 +107,8 @@ GRADER_KEY_DIR = Path(os.environ.get("GRADER_KEY_DIR", "/grader-key"))
 GROUND_TRUTH_PATH = GRADER_KEY_DIR / "ground-truth.yaml"
 CONFIG_BEFORE_MAP_PATH = GRADER_KEY_DIR / "config_before.json"
 GRADER = Path(os.environ.get("GRADER_DIR", "/grader"))
+RQ_BACKLOG_RECOVERY_JSON = GRADER / "sut" / "rq_backlog_recovery.json"
+ACCEPTED_EMAIL_DELIVERY_JSON = GRADER / "sut" / "accepted_email_delivery.json"
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090").rstrip("/")
 SCRAPE_INTERVAL_S = float(os.environ.get("SCRAPE_INTERVAL_S", "2"))
 K8S_SA_DIR = Path(
@@ -139,7 +140,7 @@ log = logging.getLogger("loadgen_sidecar_frappe")
 _SESSION_POOL: SessionPool | None = None
 
 
-def _register_frappe_drivers(pool: SessionPool) -> None:
+def _register_frappe_drivers(pool: SessionPool) -> Any:
     """Monkey-patch DRIVERS with the Frappe drivers, using a shared pool.
 
     One PreparedReportLedger is shared between rq_enqueue (producer) and
@@ -157,7 +158,126 @@ def _register_frappe_drivers(pool: SessionPool) -> None:
     DRIVERS[DeskWorkDriver.name] = DeskWorkDriver(pool)
     DRIVERS[DeskWriteDriver.name] = DeskWriteDriver(pool)
     DRIVERS[RQEnqueueDriver.name] = RQEnqueueDriver(pool, ledger)
-    DRIVERS[RQCompleteDriver.name] = RQCompleteDriver(pool, ledger)
+    completion_driver = RQCompleteDriver(pool, ledger)
+    DRIVERS[RQCompleteDriver.name] = completion_driver
+    return completion_driver
+
+
+async def _seed_stranded_prepared_report(
+    completion_driver: Any, *, with_emails: bool = False
+) -> tuple[Any, dict[str, str]] | None:
+    """Leave one of two accepted DB reports stranded across a broker interruption.
+
+    Both reports retain executable job hashes. The first loses queue
+    membership and its readable description. Both database rows remain
+    accepted. This runs before the MariaDB fault and episode clock, while
+    writes work.
+    """
+    from loadgen_frappe.drivers import ENQUEUE_URL, _do_request
+
+    queue_key = "rq:queue:home-frappe-frappe-bench:long"
+
+    async def redis_command(*parts: str | bytes) -> Any:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("svc-redis-queue", 6379), timeout=5.0
+        )
+
+        async def response() -> Any:
+            header = await reader.readline()
+            if not header:
+                raise RuntimeError("Redis closed while seeding stranded report")
+            kind, raw = header[:1], header[1:-2]
+            if kind == b"-":
+                raise RuntimeError(f"Redis seed command failed: {raw.decode(errors='replace')}")
+            if kind == b"+":
+                return raw.decode()
+            if kind == b":":
+                return int(raw)
+            if kind == b"$":
+                size = int(raw)
+                return None if size < 0 else (await reader.readexactly(size + 2))[:-2]
+            if kind == b"*":
+                count = int(raw)
+                return [await response() for _ in range(count)]
+            raise RuntimeError(f"unexpected Redis response type {kind!r}")
+
+        try:
+            raw_parts = [part if isinstance(part, bytes) else part.encode() for part in parts]
+            command = f"*{len(raw_parts)}\r\n".encode() + b"".join(
+                f"${len(part)}\r\n".encode() + part + b"\r\n" for part in raw_parts
+            )
+            writer.write(command)
+            await writer.drain()
+            return await asyncio.wait_for(response(), timeout=5.0)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    names: list[str] = []
+    template_job_key: str | None = None
+    for index in range(2):
+        before = await redis_command("LRANGE", queue_key, "0", "-1")
+        async with aiohttp.ClientSession() as session:
+            _slot, sid = completion_driver.pool.sid_for(index)
+            status, body = await _do_request(
+                "POST", ENQUEUE_URL, session, sid,
+                params={"report_name": "Database Storage Usage By Tables", "filters": "{}"},
+            )
+        payload = json.loads(body) if body else {}
+        name = payload.get("message", {}).get("name") if isinstance(payload, dict) else None
+        if status != 200 or not isinstance(name, str) or not name:
+            raise RuntimeError(f"stranded report seed failed: HTTP {status}, {body[:300]}")
+        after = await redis_command("LRANGE", queue_key, "0", "-1")
+        new_jobs = set(after) - set(before)
+        if len(new_jobs) != 1:
+            raise RuntimeError(f"stranded report seed expected one new RQ job, got {len(new_jobs)}")
+        job_id = next(iter(new_jobs))
+        job_key = "rq:job:" + job_id.decode()
+        if await redis_command("EXISTS", job_key) != 1:
+            raise RuntimeError("stranded report seed lost its recoverable RQ job hash")
+        job_data = await redis_command("HGET", job_key, "data")
+        if not isinstance(job_data, bytes):
+            raise RuntimeError("stranded report seed lost its serialized RQ job data")
+        try:
+            decoded_job = zlib.decompress(job_data)
+        except zlib.error as exc:
+            raise RuntimeError("stranded report seed cannot decode its RQ job data") from exc
+        if name.encode() not in decoded_job or b"generate_report" not in decoded_job:
+            raise RuntimeError("stranded report seed has no recoverable job identity")
+        if index == 0:
+            if await redis_command("LREM", queue_key, "1", job_id.decode()) != 1:
+                raise RuntimeError("stranded report seed could not remove queue membership")
+            template_job_key = job_key
+            description = await redis_command("HGET", job_key, "description")
+            if not isinstance(description, bytes) or name.encode() not in description:
+                raise RuntimeError("stranded report seed expected a report-specific job description")
+            await redis_command("HSET", job_key, "description", "background report task")
+            if await redis_command("HGET", job_key, "description") != b"background report task":
+                raise RuntimeError("stranded report seed could not mask the job description")
+            if job_id in await redis_command("LRANGE", queue_key, "0", "-1"):
+                raise RuntimeError("stranded report seed still has queue membership")
+        elif job_id not in await redis_command("LRANGE", queue_key, "0", "-1"):
+            raise RuntimeError("second accepted report lost queue membership")
+        completion_driver.ledger.append(name, asyncio.get_running_loop().time())
+        names.append(name)
+    if names[0] == names[1]:
+        raise RuntimeError("stranded report seed reused a Prepared Report identity")
+    log.info("seeded two accepted Prepared Reports with one retained RQ job lacking queue membership")
+    if with_emails:
+        if template_job_key is None:
+            raise RuntimeError("accepted email seed has no retained report template")
+        parts = await redis_command("HGETALL", template_job_key)
+        if not isinstance(parts, list) or len(parts) % 2:
+            raise RuntimeError("accepted email seed has an invalid RQ job template")
+        template = dict(zip(parts[::2], parts[1::2]))
+        from loadgen_frappe.mail_seed import seed_email_queue
+
+        sink, expected = await seed_email_queue(
+            completion_driver.pool, completion_driver.ledger, redis_command, template
+        )
+        log.info("seeded %d accepted Email Queue documents with distinct queued jobs", len(expected))
+        return sink, expected
+    return None
 
 
 # ---------------------------------------------------------------------------- #
@@ -166,7 +286,7 @@ def _register_frappe_drivers(pool: SessionPool) -> None:
 # Fires concurrent GET /admin/config against every SNAPSHOT_SERVICES role. Each
 # role is a Frappe workload with a frappe-admin sidecar (Phase 3 standalone or
 # Phase 4 injected) exposing the endpoint on port 8000. Failures are RECORDED
-# per role (not dropped) so the oracle can FAIL CLOSED if a snapshot target was
+# per role (not dropped) so the verifier can FAIL CLOSED if a snapshot target was
 # unreachable at declare time — mirrors the Slack sidecar's contract.
 # ---------------------------------------------------------------------------- #
 async def _snapshot_service_configs() -> dict[str, Any]:
@@ -426,16 +546,60 @@ def _mariadb_runtime_fault_plan(
     specs = grader_hooks.mariadb_probe_specs(manifest)
     if kind == "grant_revocation":
         return _mariadb_grant_revocation_plan(manifest, specs, variable, value_raw)
+    if kind in {"global_and_grant", "global_and_grants"}:
+        try:
+            compound = json.loads(value_raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("frappe fault activation: invalid compound fault JSON") from exc
+        if not isinstance(compound, dict) or not isinstance(compound.get("global"), bool):
+            raise RuntimeError("frappe fault activation: compound fault requires global boolean")
+        if kind == "global_and_grant":
+            if set(compound) != {"global", "grant"} or not isinstance(compound["grant"], str):
+                raise RuntimeError("frappe fault activation: compound fault requires one grant privilege")
+            privileges = [compound["grant"]]
+        else:
+            privileges = compound.get("grants")
+            if (
+                set(compound) != {"global", "grants"}
+                or not isinstance(privileges, list)
+                or len(privileges) != 2
+                or not all(isinstance(privilege, str) for privilege in privileges)
+                or len(set(privileges)) != 2
+                or set(privileges) != {"INSERT", "UPDATE"}
+            ):
+                raise RuntimeError(
+                    "frappe fault activation: multi-grant compound requires "
+                    "exactly INSERT and UPDATE"
+                )
+        return {
+            "kind": "compound",
+            "plans": [
+                _mariadb_global_variable_plan(manifest, specs, variable, str(compound["global"]).lower()),
+                *[
+                    _mariadb_grant_revocation_plan(manifest, specs, privilege, "site")
+                    for privilege in privileges
+                ],
+            ],
+        }
     if kind != "global_variable":
         raise RuntimeError(
             f"frappe fault activation: unsupported kind {kind!r}; "
-            "only global_variable and grant_revocation are implemented"
+            "only global_variable, grant_revocation, global_and_grant, and global_and_grants are implemented"
         )
+    return _mariadb_global_variable_plan(manifest, specs, variable, value_raw)
+
+
+def _mariadb_global_variable_plan(
+    manifest: dict[str, Any],
+    specs: dict[str, dict[str, Any]],
+    variable: str,
+    value_raw: str,
+) -> dict[str, Any]:
     literal, expected, value_type = _runtime_fault_literal(variable, value_raw)
     matching = [
         (probe_id, spec)
         for probe_id, spec in specs.items()
-        if spec.get("kind") == kind and spec.get("variable") == variable
+        if spec.get("kind") == "global_variable" and spec.get("variable") == variable
     ]
     if len(matching) != 1:
         raise RuntimeError(
@@ -526,47 +690,49 @@ async def _activate_mariadb_runtime_fault(manifest: dict[str, Any]) -> None:
     plan = _mariadb_runtime_fault_plan(manifest)
     if plan is None:
         return
-    spec = plan["spec"]
-    expected = plan["expected"]
-
     import grader_hooks
 
-    if plan["kind"] == "global_variable":
-        variable, literal = plan["variable"], plan["literal"]
-        await _run_mariadb_query(f"SET GLOBAL `{variable}` = {literal};")
-    else:
-        # Discover the site schema and its non-root grantees, then revoke the
-        # allow-listed privilege from each. Every statement is code-owned.
-        database = grader_hooks.mariadb_probe_database_from_output(
-            await _run_mariadb_query(grader_hooks.mariadb_probe_database_query(spec))
-        )
-        grantees = grader_hooks.mariadb_grantees_from_output(
-            await _run_mariadb_query(
-                grader_hooks.mariadb_schema_grantees_query(database, plan["privilege"])
+    plans = plan["plans"] if plan["kind"] == "compound" else [plan]
+    for member in plans:
+        if member["kind"] == "global_variable":
+            variable, literal = member["variable"], member["literal"]
+            await _run_mariadb_query(f"SET GLOBAL `{variable}` = {literal};")
+        else:
+            # Discover the site schema and its non-root grantees, then revoke
+            # only the allow-listed privilege. Every statement is code-owned.
+            spec = member["spec"]
+            database = grader_hooks.mariadb_probe_database_from_output(
+                await _run_mariadb_query(grader_hooks.mariadb_probe_database_query(spec))
             )
-        )
-        for grantee in grantees:
-            await _run_mariadb_query(
-                grader_hooks.mariadb_revoke_statement(plan["privilege"], database, grantee)
+            grantees = grader_hooks.mariadb_grantees_from_output(
+                await _run_mariadb_query(
+                    grader_hooks.mariadb_schema_grantees_query(database, member["privilege"])
+                )
             )
+            for grantee in grantees:
+                await _run_mariadb_query(
+                    grader_hooks.mariadb_revoke_statement(member["privilege"], database, grantee)
+                )
 
-    database_query = grader_hooks.mariadb_probe_database_query(spec)
-    resolved_database = None
-    if database_query is not None:
-        resolved_database = grader_hooks.mariadb_probe_database_from_output(
-            await _run_mariadb_query(database_query)
+    for member in plans:
+        spec = member["spec"]
+        database_query = grader_hooks.mariadb_probe_database_query(spec)
+        resolved_database = None
+        if database_query is not None:
+            resolved_database = grader_hooks.mariadb_probe_database_from_output(
+                await _run_mariadb_query(database_query)
+            )
+        observed = _parse_mariadb_probe_output(
+            spec,
+            await _run_mariadb_query(
+                grader_hooks.mariadb_probe_query(spec, resolved_database=resolved_database)
+            ),
         )
-    observed = _parse_mariadb_probe_output(
-        spec,
-        await _run_mariadb_query(
-            grader_hooks.mariadb_probe_query(spec, resolved_database=resolved_database)
-        ),
-    )
-    if observed != expected:
-        raise RuntimeError(
-            f"frappe fault activation: read-back {observed!r} "
-            f"does not match requested {expected!r}"
-        )
+        if observed != member["expected"]:
+            raise RuntimeError(
+                f"frappe fault activation: read-back {observed!r} "
+                f"does not match requested {member['expected']!r}"
+            )
     # Promtail and Performance Schema persist trusted activation activity into
     # the solver-visible episode. Erase the code-owned SET/readback statements
     # before release. This is load-bearing, so any cleanup failure is terminal.
@@ -672,6 +838,22 @@ def _parse_mariadb_probe_output(spec: dict[str, Any], stdout: str) -> Any:
             "count": len(lines),
             "sha256": hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest(),
         }
+    if kind == "site_account_grants":
+        if not lines:
+            raise RuntimeError("site_account_grants returned no privilege rows")
+        if len(lines) > 4096:
+            raise RuntimeError(
+                "site_account_grants exceeded the fixed 4096-row evidence bound"
+            )
+        if any(len(line.split("\t")) != 4 for line in lines):
+            raise RuntimeError(
+                "site_account_grants expected four columns per privilege row"
+            )
+        if lines != sorted(set(lines)):
+            raise RuntimeError(
+                "site_account_grants must return unique rows in canonical order"
+            )
+        return lines
     if kind == "innodb_lock_summary":
         if len(lines) != 1:
             raise RuntimeError(
@@ -787,52 +969,308 @@ async def _capture_mariadb_state(manifest: dict[str, Any], phase: str) -> None:
     log.info("captured MariaDB runtime state phase=%s probes=%d", phase, len(probes))
 
 
+async def _capture_redis_state(manifest: dict[str, Any], phase: str) -> None:
+    """Capture one protected queue-Redis configuration snapshot via admin."""
+    redis_contract = manifest.get("redis_state")
+    if not isinstance(redis_contract, dict):
+        raise RuntimeError("redis_state capture requires a manifest mapping")
+    url = f"http://frappe-admin:{SUT_ADMIN_PORT}/admin/redis-config"
+    async with aiohttp.ClientSession() as client:
+        async with client.get(url, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("engine") != "redis"
+        or payload.get("service") != "redis-queue"
+        or not isinstance(payload.get("settings"), dict)
+        or not isinstance(payload.get("cache_settings"), dict)
+        or set(payload.get("safety_counters", {})) != {"flushall", "flushdb"}
+        or any(
+            not isinstance(value, int) or value < 0
+            for value in payload.get("safety_counters", {}).values()
+        )
+        or (
+            "cache_safety_counters" in payload
+            and (
+                not isinstance(payload["cache_safety_counters"], dict)
+                or set(payload["cache_safety_counters"]) != {"flushall", "flushdb"}
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool) or value < 0
+                    for value in payload["cache_safety_counters"].values()
+                )
+            )
+        )
+        or (
+            "cache_run_id" in payload
+            and (
+                not isinstance(payload["cache_run_id"], str)
+                or len(payload["cache_run_id"]) != 40
+            )
+        )
+    ):
+        raise RuntimeError(
+            f"redis_state capture received malformed admin payload: {payload!r}"
+        )
+    if redis_contract.get("cache_flush_guard") and not {
+        "cache_safety_counters",
+        "cache_run_id",
+    } <= set(payload):
+        raise RuntimeError(
+            "redis_state capture requires redis-cache flush counters and run_id "
+            "(cache_flush_guard); the admin sidecar image predates them"
+        )
+    if "acl" in redis_contract:
+        acl_state = payload.get("acl_state")
+        if (
+            not isinstance(acl_state, dict)
+            or set(acl_state)
+            != {
+                "user",
+                "flags",
+                "passwords",
+                "command_rules",
+                "key_rules",
+                "channel_rules",
+                "selectors",
+            }
+        ):
+            raise RuntimeError(
+                "redis_state capture requires complete protected ACL evidence: "
+                f"{acl_state!r}"
+            )
+    payload["phase"] = phase
+    payload["captured_at"] = datetime.now(timezone.utc).isoformat()
+    target = GRADER / "sut" / f"redis_state_{phase}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(target)
+    log.info(
+        "captured Redis configuration phase=%s settings=%d",
+        phase,
+        len(payload["settings"]),
+    )
+
+
+async def _restart_redis_queue_for_challenge(manifest: dict[str, Any]) -> None:
+    redis_state = manifest.get("redis_state")
+    if not isinstance(redis_state, dict) or not redis_state.get("restart_challenge"):
+        return
+    identity_before = None
+    if manifest.get("docker_state", {}).get("restart_identity"):
+        identity_before = await _k8s_pod_state()
+        if identity_before.get("error"):
+            raise RuntimeError(f"queue restart identity capture failed: {identity_before!r}")
+    url = f"http://frappe-admin:{SUT_ADMIN_PORT}/admin/redis-queue-restart"
+    attempts = 3
+    payload: Any = None
+    last_error = ""
+    async with aiohttp.ClientSession() as client:
+        for attempt in range(1, attempts + 1):
+            async with client.post(
+                url, json={}, timeout=aiohttp.ClientTimeout(total=150.0)
+            ) as resp:
+                body = await resp.text()
+                if resp.status == 500:
+                    last_error = body[:500]
+                    if attempt < attempts:
+                        delay = float(2 ** (attempt - 1))
+                        log.warning(
+                            "trusted redis restart probe returned transient HTTP 500 "
+                            "(attempt %d/%d); retrying in %.1fs: %s",
+                            attempt,
+                            attempts,
+                            delay,
+                            last_error,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    break
+                if resp.status >= 300:
+                    raise RuntimeError(
+                        "redis restart challenge returned terminal HTTP "
+                        f"{resp.status}: {body[:500]}"
+                    )
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"redis restart challenge returned malformed JSON: {body[:500]}"
+                    ) from exc
+                break
+    if payload is None:
+        raise RuntimeError(
+            "redis restart challenge failed after bounded retries: "
+            f"attempts={attempts}, last_http=500, body={last_error!r}"
+        )
+    restart = payload.get("restart") if isinstance(payload, dict) else None
+    if (
+        not isinstance(restart, dict)
+        or not restart.get("old_uid")
+        or not restart.get("new_uid")
+        or restart["old_uid"] == restart["new_uid"]
+    ):
+        raise RuntimeError(
+            f"redis restart challenge returned malformed receipt: {payload!r}"
+        )
+    await _capture_redis_state(manifest, "post_restart")
+    if manifest.get("docker_state", {}).get("restart_identity"):
+        # A trusted retry may follow a pod replacement whose readiness wait
+        # failed. Bind the entire frozen challenge interval, not merely its
+        # final attempt. The verifier separately compares baseline/declaration.
+        pods_before = identity_before["components"]["svc-redis-queue"]["pods"]
+        if len(pods_before) != 1:
+            raise RuntimeError("protected queue restart requires one initial pod")
+        restart = {"old_uid": next(iter(pods_before)), "new_uid": restart["new_uid"]}
+        (GRADER / "sut" / "queue_restart_receipt.json").write_text(
+            json.dumps(restart, sort_keys=True), encoding="utf-8"
+        )
+    log.info("completed protected redis-queue restart challenge")
+
+
+def make_pre_soak_boundary_hook(
+    completion_driver: Any,
+    manifest: dict[str, Any],
+    profile_drivers: list[str],
+    accepted_email: tuple[Any, dict[str, str]] | None = None,
+):
+    """Drain retained jobs before the single protected pre-soak restart."""
+    recover_backlog = completion_driver.name in profile_drivers
+    redis_state = manifest.get("redis_state")
+    needs_restart = bool(
+        isinstance(redis_state, dict) and redis_state.get("restart_challenge")
+    )
+    if not recover_backlog and not needs_restart:
+        return None
+
+    async def _finish(session: aiohttp.ClientSession) -> dict[str, Any]:
+        if manifest.get("docker_state", {}).get("restart_identity"):
+            # The agent is frozen before this hook; capture before recovery and
+            # the protected restart so an earlier agent restart cannot hide.
+            await _write_service_identity("declaration")
+        if recover_backlog:
+            receipt = await completion_driver.recover_pre_soak(
+                session, loop_time=asyncio.get_running_loop().time
+            )
+        else:
+            receipt = {
+                "schema_version": 1,
+                "phase": "pre_soak_recovery",
+                "pass": True,
+                "accepted": 0,
+                "verified_completed": 0,
+                "remaining": 0,
+                "poll_attempts": 0,
+            }
+        if accepted_email is not None:
+            sink, expected = accepted_email
+            observed: dict[str, list[str]] = {}
+            for recipient, marker in sink.deliveries:
+                observed.setdefault(recipient, []).append(marker)
+            matched = sum(observed.get(recipient) == [marker] for recipient, marker in expected.items())
+            delivery = {
+                "schema_version": 1,
+                "phase": "pre_soak_recovery",
+                "pass": matched == len(expected) and len(sink.deliveries) == len(expected),
+                "accepted": len(expected),
+                "delivered_once": matched,
+                "observed": len(sink.deliveries),
+                "accepted_names_sha256": hashlib.sha256(
+                    "\n".join(sorted(expected)).encode()
+                ).hexdigest(),
+            }
+            ACCEPTED_EMAIL_DELIVERY_JSON.parent.mkdir(parents=True, exist_ok=True)
+            ACCEPTED_EMAIL_DELIVERY_JSON.write_text(
+                json.dumps(delivery, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            log.info("accepted email delivery: %s", delivery)
+        await _restart_redis_queue_for_challenge(manifest)
+        # The receipt's field set is a verifier contract
+        # (verifier/providers/redis_state.py::_validate_backlog_recovery); the
+        # restart itself is proven by the post_restart redis_state snapshot.
+        RQ_BACKLOG_RECOVERY_JSON.parent.mkdir(parents=True, exist_ok=True)
+        tmp = RQ_BACKLOG_RECOVERY_JSON.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(RQ_BACKLOG_RECOVERY_JSON)
+        log.info(
+            "pre-soak Prepared Report backlog pass=%s accepted=%d remaining=%d "
+            "attempts=%d restart_challenge=%s",
+            receipt["pass"],
+            receipt["accepted"],
+            receipt["remaining"],
+            receipt["poll_attempts"],
+            needs_restart,
+        )
+        return receipt
+
+    return _finish
+
+
 # ---------------------------------------------------------------------------- #
 # handle_declare — Frappe declare handler.
 # ---------------------------------------------------------------------------- #
-async def _finish_declaration_boundary(
-    lg: LoadGen, state: dict[str, Any], submission: dict[str, Any]
-) -> None:
-    """Freeze uid 10001, capture the post-freeze basis, then start the soak."""
-    try:
-        await asyncio.sleep(0.1)  # let the accepted response reach the submitter
-        receipt = await request_agent_freeze(state["grader_access_token"])
-        post = await _snapshot_service_configs()
-        changed = submission != post
-        ack_s = round(asyncio.get_running_loop().time() - lg._t0, 6)
-        receipt.update(
-            {
-                "freeze_ack_s": ack_s,
-                "submission_to_freeze_mutation": changed,
-                "submission_snapshot": CONFIG_AT_SUBMISSION_JSON.name,
-                "post_freeze_snapshot": CONFIG_AFTER_FREEZE_JSON.name,
-            }
-        )
-        CONFIG_AFTER_FREEZE_JSON.write_text(
-            json.dumps({"captured_s": ack_s, "services": post}, indent=2)
-        )
-        AGENT_BOUNDARY_JSON.write_text(json.dumps(receipt, indent=2, sort_keys=True))
-        manifest = state.get("manifest")
-        if not isinstance(manifest, dict):
-            raise RuntimeError("declaration boundary has no validated ground-truth manifest")
-        if "mariadb_state" in manifest:
-            await _capture_mariadb_state(manifest, "declaration")
-        lg.declare()
-        _write_config_at_declare(post, lg.declare_ts_s)
-    except Exception as exc:
-        state["boundary_error"] = f"{type(exc).__name__}: {exc}"
-        task = state.get("run_task")
-        if task is not None:
-            task.cancel()
-        log.exception("terminal declaration boundary FAILED: %s", exc)
+def make_agent_boundary_hook(lg: LoadGen, state: dict[str, Any]):
+    """The terminal agent boundary: freeze uid 10001, then capture the basis.
+
+    ONE boundary for both endings — an early declaration and the agent window
+    elapsing. The runner awaits this before it opens the graded soak, so when it
+    returns the agent is provably dead and nothing it does can reach the graded
+    window. A failure here is terminal: it propagates into LoadGen.run() and the
+    episode fails loudly rather than grading a window the agent could still
+    touch.
+    """
+
+    async def _boundary(reason: str) -> None:
+        try:
+            await asyncio.sleep(0.1)  # let the accepted response reach the submitter
+            receipt = await request_agent_freeze(state["grader_access_token"])
+            post = await _snapshot_service_configs()
+            submission = state.get("submission_snapshot")
+            ack_s = round(asyncio.get_running_loop().time() - lg._t0, 6)
+            receipt.update(
+                {
+                    "reason": reason,
+                    "freeze_ack_s": ack_s,
+                    "submission_to_freeze_mutation": (
+                        None if submission is None else submission != post
+                    ),
+                    "submission_snapshot": CONFIG_AT_SUBMISSION_JSON.name,
+                    "post_freeze_snapshot": CONFIG_AFTER_FREEZE_JSON.name,
+                }
+            )
+            CONFIG_AFTER_FREEZE_JSON.write_text(
+                json.dumps({"captured_s": ack_s, "services": post}, indent=2)
+            )
+            AGENT_BOUNDARY_JSON.write_text(json.dumps(receipt, indent=2, sort_keys=True))
+            manifest = state.get("manifest")
+            if not isinstance(manifest, dict):
+                raise RuntimeError("agent boundary has no validated ground-truth manifest")
+            if "mariadb_state" in manifest:
+                await _capture_mariadb_state(manifest, "declaration")
+            if "redis_state" in manifest:
+                await _capture_redis_state(manifest, "declaration")
+            _write_config_at_declare(post, ack_s)
+        except Exception as exc:
+            state["boundary_error"] = f"{type(exc).__name__}: {exc}"
+            log.exception("terminal agent boundary (%s) FAILED: %s", reason, exc)
+            raise
+
+    return _boundary
 
 
 async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> Any:
-    """aiohttp handler for POST /declare.
+    """aiohttp handler for POST /declare_repair_complete.
 
-    Validate and accept the first report, then finalize the freezer boundary in
-    the background. The accepted in-flight state holds LoadGen open until the
-    boundary starts the soak. Malformed or late reports fail loudly.
+    THE explicit ending. It takes no body: what it means is "I am done touching
+    the system", which is a lifecycle statement and not a narrative. It used to be
+    the incident-report endpoint, so ending the episode required writing prose and
+    writing prose ended the episode; the incident report now lives on POST /report
+    and has no lifecycle authority at all.
+
+    First declaration wins, and there is no deadline it can miss. An episode that
+    never calls this is frozen at its deadline and graded from its final state.
 
     BEFORE flipping LoadGen, snapshots ``/admin/config`` against the standalone
     frappe-admin sidecar (Phase 4 default; single endpoint since per-workload
@@ -840,27 +1278,14 @@ async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> An
     F7 post-declare-drift basis for the in-pod grader. See
     ``_snapshot_service_configs``.
     """
+    del request  # the declaration carries no payload
     from aiohttp import web
-
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        log.error("POST /declare with non-JSON body: %s", exc)
-        return web.json_response(
-            {"ok": False, "error": f"declare body is not valid JSON: {exc}"}, status=400
-        )
-
-    try:
-        _validate_declare_body(body)
-    except ValueError as exc:
-        log.error("POST /declare with invalid incident report: %s", exc)
-        return web.json_response({"ok": False, "error": str(exc)}, status=400)
 
     declaration_lock = state.setdefault("declaration_lock", asyncio.Lock())
     async with declaration_lock:
         if state.get("declaration_locked"):
             log.warning(
-                "POST /declare received after the first accepted declaration "
+                "POST /declare_repair_complete received after the first accepted declaration "
                 "(declare_ts_s=%s)",
                 lg.declare_ts_s,
             )
@@ -869,31 +1294,34 @@ async def handle_declare(request: Any, lg: LoadGen, state: dict[str, Any]) -> An
             )
 
         if not lg.begin_declaration():
+            # Only reachable once the episode itself is over; the agent is
+            # already frozen by then, so nothing it runs can get here.
             return web.json_response(
-                {"ok": False, "error": "declaration_deadline_elapsed"}, status=409
+                {
+                    "ok": False,
+                    "error": "episode_already_complete",
+                    "message": "the episode is already over and is being graded",
+                },
+                status=409,
             )
 
         state["declaration_locked"] = True
         snapshot = await _snapshot_service_configs()
-        _write_report(body)
         submitted_s = round(asyncio.get_running_loop().time() - lg._t0, 6)
         CONFIG_AT_SUBMISSION_JSON.write_text(
             json.dumps({"captured_s": submitted_s, "services": snapshot}, indent=2)
         )
-        state["boundary_task"] = asyncio.create_task(
-            _finish_declaration_boundary(lg, state, snapshot),
-            name="agent-freeze-boundary",
-        )
+        state["submission_snapshot"] = snapshot
+        lg.declare()
     log.info(
-        "POST /declare accepted and locked: wrote %s; awaiting agent freezer",
-        REPORT_JSON,
+        "POST /declare_repair_complete accepted and locked; awaiting agent freezer"
     )
     return web.json_response(
         {
             "ok": True,
             "already_declared": False,
             "final": True,
-            "message": "incident report accepted; exit immediately",
+            "message": "repair declared complete; exit immediately",
             "declare_ts_s": None,
             "soak_start_s": None,
         }
@@ -998,7 +1426,7 @@ def parse_metrics(text: str) -> dict[str, Any]:
 
 
 async def scrape_metrics(stop: asyncio.Event, t0: float) -> None:
-    """Scrape the Prometheus federation surface into the oracle JSONL shape."""
+    """Scrape the Prometheus federation surface into the verifier's JSONL shape."""
     matcher = (
         '{__name__=~"mysql_global_.*|redis_connected_clients|'
         'redis_memory_used_bytes|rq_queue_depth|frappe_admin_sidecar_up"}'
@@ -1060,8 +1488,18 @@ async def _k8s_pod_state() -> dict[str, Any]:
             statuses = status.get("containerStatuses") or []
             entry = components.setdefault(
                 component,
-                {"restart_count": 0, "phase": status.get("phase"), "ready": True},
+                {"restart_count": 0, "phase": status.get("phase"), "ready": True, "pods": {}},
             )
+            uid = (item.get("metadata") or {}).get("uid")
+            if not isinstance(uid, str) or not uid:
+                raise RuntimeError(f"pod for {component} has no UID")
+            entry["pods"][uid] = {
+                container["name"]: {
+                    "container_id": container.get("containerID"),
+                    "restart_count": container.get("restartCount"),
+                }
+                for container in statuses
+            }
             entry["restart_count"] += sum(
                 int(container.get("restartCount", 0)) for container in statuses
             )
@@ -1076,6 +1514,15 @@ async def _k8s_pod_state() -> dict[str, Any]:
             "components": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+async def _write_service_identity(phase: str, snapshot: dict[str, Any] | None = None) -> None:
+    snapshot = await _k8s_pod_state() if snapshot is None else snapshot
+    if snapshot.get("error") or not isinstance(snapshot.get("components"), dict):
+        raise RuntimeError(f"service identity capture failed: {snapshot!r}")
+    path = GRADER / "sut" / f"service_identity_{phase}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(snapshot, sort_keys=True), encoding="utf-8")
 
 
 async def _capture_restart_baseline(required: list[str]) -> dict[str, Any]:
@@ -1138,15 +1585,27 @@ async def _probe_docker_state(
         mariadb_up = False
 
     pod_state_raw = await _k8s_pod_state()
-    required = services + [grader_hooks.DB_STATE_KEY]
+    if manifest.get("docker_state", {}).get("restart_identity"):
+        await _write_service_identity("soak_end", pod_state_raw)
+    required = list(dict.fromkeys(services + [grader_hooks.DB_STATE_KEY]))
     # Validate both snapshots before subtraction. A missing baseline component
     # cannot silently become zero: that would let a replacement pod evade the
     # restart-masking guard.
     assemble.restart_counts_from_pod_state(restart_baseline, required)
-    assemble.restart_counts_from_pod_state(pod_state_raw, required)
-    pod_state = grader_hooks.subtract_restart_baseline(
-        pod_state_raw, restart_baseline
-    )
+    assemble.restart_counts_from_pod_state(pod_state_raw, [])
+    if manifest.get("docker_state", {}).get("restart_identity"):
+        for service in required:
+            pod_state_raw["components"].setdefault(service, {
+                "ready": False, "restart_count": restart_baseline["components"][service]["restart_count"],
+            })
+    else:
+        assemble.restart_counts_from_pod_state(pod_state_raw, required)
+    if manifest.get("docker_state", {}).get("restart_identity"):
+        pod_state = pod_state_raw
+    else:
+        pod_state = grader_hooks.subtract_restart_baseline(
+            pod_state_raw, restart_baseline
+        )
     POD_STATE_JSON.write_text(json.dumps(pod_state, indent=2, sort_keys=True))
     restarts = assemble.restart_counts_from_pod_state(pod_state, required)
     components = pod_state["components"]
@@ -1174,7 +1633,7 @@ async def _probe_docker_state(
 async def start_http_server(state: dict[str, Any]) -> Any:
     """Start the single long-lived aiohttp server on :DECLARE_PORT.
 
-    Started BEFORE the episode (POST /declare returns 503 until state["lg"] is
+    Started BEFORE the episode (POST /declare_repair_complete returns 503 until state["lg"] is
     published by run_episode). Never cleaned up — after episode end it is the
     fetch surface the task's tests/test.sh polls.
     """
@@ -1184,8 +1643,8 @@ async def start_http_server(state: dict[str, Any]) -> Any:
     site = web.TCPSite(runner, host="0.0.0.0", port=DECLARE_PORT)
     await site.start()
     log.info(
-        "http server listening on :%d (POST /declare, POST /grader/finalize-undeclared, GET /healthz, "
-        "GET /grader/{episode_done,bundle} — verifier capability required)",
+        "http server listening on :%d (POST /report, POST /declare_repair_complete, GET /healthz, "
+        "POST+GET /grader/{episode-start,episode_done,bundle} — verifier capability required)",
         DECLARE_PORT,
     )
     return runner
@@ -1287,7 +1746,7 @@ async def _collect_episode_evidence(
 
     (GRADER / "ground-truth.yaml").write_bytes(GROUND_TRUTH_PATH.read_bytes())
     (GRADER / "config-before.json").write_bytes(CONFIG_BEFORE_MAP_PATH.read_bytes())
-    log.info("finalized evidence; task-local oracle owns all grading decisions")
+    log.info("finalized evidence; task-local verifier owns all grading decisions")
 
 
 async def run_episode(state: dict[str, Any]) -> None:
@@ -1319,7 +1778,7 @@ async def run_episode(state: dict[str, Any]) -> None:
     # the first arrival doesn't burn its budget on a login round-trip.
     from loadgen_frappe.drivers import SESSION_POOL_SIZE
     pool = SessionPool(size=SESSION_POOL_SIZE)
-    _register_frappe_drivers(pool)
+    completion_driver = _register_frappe_drivers(pool)
 
     try:
         async with aiohttp.ClientSession() as auth_session:
@@ -1331,6 +1790,18 @@ async def run_episode(state: dict[str, Any]) -> None:
             await pool.provision(auth_session)
         log.info("SessionPool ready")
 
+        runtime_seed = baseline_manifest.get("runtime_seed")
+        if runtime_seed not in (
+            None, "stranded_prepared_report", "stranded_prepared_report_with_emails"
+        ):
+            raise RuntimeError(f"unsupported Frappe runtime seed: {runtime_seed!r}")
+        accepted_email = None
+        if runtime_seed in ("stranded_prepared_report", "stranded_prepared_report_with_emails"):
+            accepted_email = await _seed_stranded_prepared_report(
+                completion_driver,
+                with_emails=runtime_seed == "stranded_prepared_report_with_emails",
+            )
+
         # Site creation and session bootstrap are complete.  A task-local
         # runtime fault may now be applied without breaking substrate setup.
         # Capture baseline only after its verified read-back, then release the
@@ -1338,6 +1809,8 @@ async def run_episode(state: dict[str, Any]) -> None:
         await _activate_mariadb_runtime_fault(baseline_manifest)
         if "mariadb_state" in baseline_manifest:
             await _capture_mariadb_state(baseline_manifest, "baseline")
+        if "redis_state" in baseline_manifest:
+            await _capture_redis_state(baseline_manifest, "baseline")
     except Exception as exc:
         state["baseline_error"] = f"{type(exc).__name__}: {exc}"
         raise
@@ -1350,12 +1823,32 @@ async def run_episode(state: dict[str, Any]) -> None:
         + [grader_hooks.DB_STATE_KEY]
     )
 
-    lg = LoadGen(profile=profile, out_path=GRADER / "loadgen.jsonl")
-    await lg.start()
-    if lg._t0 is None:
-        raise RuntimeError("LoadGen.start() did not pin t0")
-    t0 = lg._t0
+    if baseline_manifest.get("docker_state", {}).get("restart_identity"):
+        await _write_service_identity("baseline", restart_baseline)
+
+    profile_drivers = profile.drivers or []
+    recovery_hook = make_pre_soak_boundary_hook(
+        completion_driver,
+        baseline_manifest,
+        profile_drivers,
+        accepted_email,
+    )
+    lg = LoadGen(
+        profile=profile,
+        out_path=GRADER / "loadgen.jsonl",
+        pre_soak_recovery_hook=recovery_hook,
+        allow_failed_pre_soak_recovery=bool(
+            isinstance(baseline_manifest.get("redis_state"), dict)
+            and baseline_manifest["redis_state"].get("pre_soak_backlog_recovery")
+        ),
+    )
+    lg.set_agent_boundary_hook(make_agent_boundary_hook(lg, state))
+    # Publish BEFORE the clock exists: POST /grader/episode-start is what pins
+    # t0, and the route needs the LoadGen to signal. Everything up to this line —
+    # site bootstrap, fault activation, baseline capture, the restart baseline —
+    # is bring-up and deliberately outside the episode clock.
     state["lg"] = lg
+    t0 = await pin_episode_t0(lg)
     scrape_stop = asyncio.Event()
     scraper = asyncio.create_task(scrape_metrics(scrape_stop, t0), name="metrics-scraper")
     run_task = asyncio.create_task(lg.run(), name="loadgen-run")
@@ -1377,27 +1870,38 @@ async def run_episode(state: dict[str, Any]) -> None:
         if isinstance(results[0], BaseException):
             raise RuntimeError(f"metrics scraper failed: {results[0]}") from results[0]
 
+    expected_completion = (
+        "declared_soak_complete"
+        if lg.declare_ts_s is not None
+        else "window_elapsed_soak_complete"
+    )
+    if lg.soak_start_s is None or lg.completion_reason != expected_completion:
+        raise RuntimeError(
+            "LoadGen returned without a completed soak lifecycle: "
+            f"declare_ts_s={lg.declare_ts_s!r}, "
+            f"soak_start_s={lg.soak_start_s!r}, "
+            f"completion_reason={lg.completion_reason!r}"
+        )
+
     end_s = round(asyncio.get_running_loop().time() - t0, 3)
     if not REPORT_JSON.exists():
         _write_report(None)
     declared = lg._declared.is_set() and lg.declare_ts_s is not None
-    if declared:
-        snapshot = await _snapshot_service_configs()
-        tmp = CONFIG_AT_SOAK_END_JSON.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(
-                {"soak_end_ts_s": end_s, "services": snapshot}, indent=2
-            ),
-            encoding="utf-8",
-        )
-        tmp.replace(CONFIG_AT_SOAK_END_JSON)
+    # The soak is the graded window and it ALWAYS runs, so the soak-end basis is
+    # always captured — declaration or not.
+    snapshot = await _snapshot_service_configs()
+    tmp = CONFIG_AT_SOAK_END_JSON.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(
+            {"soak_end_ts_s": end_s, "services": snapshot}, indent=2
+        ),
+        encoding="utf-8",
+    )
+    tmp.replace(CONFIG_AT_SOAK_END_JSON)
     if "mariadb_state" in baseline_manifest:
-        if not declared:
-            # The nop path has no agent declaration. Capture its terminal state
-            # under the declaration phase name so the intended-state predicate
-            # fails semantically instead of becoming a missing-evidence error.
-            await _capture_mariadb_state(baseline_manifest, "declaration")
         await _capture_mariadb_state(baseline_manifest, "soak_end")
+    if "redis_state" in baseline_manifest:
+        await _capture_redis_state(baseline_manifest, "soak_end")
 
     META_JSON.write_text(
         json.dumps(
@@ -1406,13 +1910,13 @@ async def run_episode(state: dict[str, Any]) -> None:
                 "profile": PROFILE_NAME,
                 "t0_iso": t0_iso,
                 "declare_ts_s": lg.declare_ts_s,
+                "freeze_ts_s": lg.freeze_ts_s,
+                "freeze_reason": lg.freeze_reason,
                 "soak_start_s": lg.soak_start_s,
+                "agent_window_s": agent_window_s(profile),
+                "soak_s": profile.soak_duration_s(),
                 "end_s": end_s,
                 "completion_reason": lg.completion_reason,
-                "undeclared_finalize_requested_s": lg.undeclared_finalize_requested_s,
-                "undeclared_evidence_min_s": (
-                    profile.effective_undeclared_evidence_min_s()
-                ),
                 "target_base_url": TARGET_BASE_URL,
                 "loadgen_summary": summary,
             },
@@ -1424,13 +1928,6 @@ async def run_episode(state: dict[str, Any]) -> None:
     # Grade in-pod BEFORE writing episode_done.json. On grading failure, the
     # exception propagates to _run_and_idle which records an episode_done with
     # error; tests/test.sh rejects it before evaluation (fail-loud).
-    if lg.completion_reason == "verifier_finalized_without_declaration":
-        write_undeclared_finalization_receipt(state, completion_s=end_s)
-    elif UNDECLARED_FINALIZATION_JSON.exists():
-        raise RuntimeError(
-            "undeclared-finalization.json exists outside the verifier-finalized lifecycle"
-        )
-
     await _collect_episode_evidence(
         declared=declared, restart_baseline=restart_baseline
     )
@@ -1439,13 +1936,13 @@ async def run_episode(state: dict[str, Any]) -> None:
         {
             "done": True,
             "declare_ts_s": lg.declare_ts_s,
+            "freeze_ts_s": lg.freeze_ts_s,
+            "freeze_reason": lg.freeze_reason,
             "soak_start_s": lg.soak_start_s,
+            "agent_window_s": agent_window_s(profile),
+            "soak_s": profile.soak_duration_s(),
             "end_s": end_s,
             "completion_reason": lg.completion_reason,
-            "undeclared_finalize_requested_s": lg.undeclared_finalize_requested_s,
-            "undeclared_evidence_min_s": (
-                profile.effective_undeclared_evidence_min_s()
-            ),
         }
     )
     log.info(
@@ -1481,19 +1978,11 @@ async def _run_and_idle() -> None:
                     "done": False,
                     "error": f"{type(exc).__name__}: {exc}",
                     "declare_ts_s": None,
+                    "freeze_ts_s": None,
+                    "freeze_reason": None,
                     "soak_start_s": None,
                     "end_s": None,
                     "completion_reason": None,
-                    "undeclared_finalize_requested_s": (
-                        state["lg"].undeclared_finalize_requested_s
-                        if state.get("lg") is not None
-                        else None
-                    ),
-                    "undeclared_evidence_min_s": (
-                        state["lg"].profile.effective_undeclared_evidence_min_s()
-                        if state.get("lg") is not None
-                        else None
-                    ),
                 }
             )
         except Exception as write_exc:  # noqa: BLE001

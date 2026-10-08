@@ -42,8 +42,8 @@ stringData:
 {{- $sfc := $.Values.agentSurface }}
 {{- $bcTarget := and $sfc.buildCapable.enabled (eq $role $sfc.buildCapable.targetRole) }}
 {{- $runtimeTarget := and $.Values.runtimeConfigBroker.enabled (eq $role "message") }}
-{{- $v2c := $.Values.gradingHarness.verifierV2Challenge }}
-{{- $challengeTarget := and $v2c.enabled (eq (printf "svc-%s" $role) $v2c.targetService) }}
+{{- $vc := $.Values.gradingHarness.verifierChallenge }}
+{{- $challengeTarget := and $vc.enabled (eq (printf "svc-%s" $role) $vc.targetService) }}
 {{- $surfaceEnabled := or $sfc.exec.enabled $sfc.buildCapable.enabled $runtimeTarget $challengeTarget }}
 {{- /* Any surface that lets the agent reach a pod (exec) or run build-capable must
        harden every app pod + strip its SA token — so all three flags feed $harden. */}}
@@ -89,7 +89,7 @@ spec:
       # source, compiles in an init-only work volume, and exports executable JS +
       # production dependencies into a separate read-only runtime volume.
       initContainers:
-        - name: trusted-build
+        - name: source-seed
           image: {{ $.Values.images.appBuilder | quote }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
           command:
@@ -103,20 +103,82 @@ spec:
                 test ! -e "$src"
                 seed_tmp="/source/services/app/.src-seed.$$"
                 marker_tmp="/source/.seeded.$$"
-                cp -R /seed/services/app/src "$seed_tmp"
+                cp -R --no-preserve=mode,ownership /seed/services/app/src "$seed_tmp"
+                chmod -R u=rwX,go=rX "$seed_tmp"
+                chown -R 10001:10001 "$seed_tmp"
                 mv "$seed_tmp" "$src"
                 printf 'schema=1\n' > "$marker_tmp"
+                chown 10001:10001 "$marker_tmp"
                 mv "$marker_tmp" /source/.seeded
               fi
+              chown -R 10001:10001 /source
+              test -r "$src"
+              test -w "$src"
+
+              # Task-layer Docker COPY permissions are host-umask dependent. Build
+              # the disposable compiler tree here while this pre-agent init still
+              # has narrowly scoped DAC/ownership capabilities, then hand the
+              # normalized tree to the non-root trusted compiler. The image
+              # filesystem remains immutable and is never mounted into the app.
+              cp -a /workspace/. /work/
+              chmod -R u=rwX,go=rX /work
+              rm -rf /work/services/app/src
+              cp -R --no-preserve=mode,ownership "$src" /work/services/app/src
+              chmod -R u=rwX,go=rX /work/services/app/src
+              chown -R 10001:10001 /work
+              test -r /work/services/app/src
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          volumeMounts:
+            - name: source
+              mountPath: /source
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+        # A restartable init sidecar starts after source normalization and before
+        # trusted-build. If compilation fails, the application stays down but the
+        # agent can still correct its source and request another trusted rebuild.
+        - name: source-editor
+          image: {{ $.Values.images.main | quote }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          restartPolicy: Always
+          command: ["sleep", "infinity"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: source
+              mountPath: /src
+        - name: trusted-build
+          image: {{ $.Values.images.appBuilder | quote }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          command:
+            - sh
+            - -ceu
+            - |
+              set -eux
+              src=/source/services/app/src
+              test -f /source/.seeded
               test -d "$src"
               source_json="$(node /workspace/tools/canonical-digest.mjs "$src" \
                 {{ $sfc.buildCapable.snapshotMaxFiles | int64 }} \
                 {{ $sfc.buildCapable.snapshotMaxFileBytes | int64 }} \
                 {{ $sfc.buildCapable.snapshotMaxBytes | int64 }})"
 
-              cp -R /workspace/. /work/
-              rm -rf /work/services/app/src
-              cp -R "$src" /work/services/app/src
+              test -d /work/services/app/src
               cd /work
               # Generate declarations only inside the init-only work tree so the
               # app compile can type-resolve servicekit, then rebuild clean runtime
@@ -299,23 +361,6 @@ spec:
             {{- end }}
           resources:
             {{- include "slack.resources" (dict "root" $ "key" $role) | nindent 12 }}
-        {{- if $bcTarget }}
-        - name: source-editor
-          image: {{ $.Values.images.main | quote }}
-          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
-          command: ["sleep", "infinity"]
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 10001
-            runAsGroup: 10001
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: source
-              mountPath: /src
-        {{- end }}
       volumes:
         - name: app-config
           configMap:

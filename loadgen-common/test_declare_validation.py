@@ -1,4 +1,4 @@
-"""Unit tests for _validate_declare_body (the /declare 400-guard).
+"""Unit tests for _validate_report_body (the /declare 400-guard).
 
 A direct POST to /declare with {} or {"findings": []} used to freeze the
 first-shot declaration as an empty report — the oracle failed it correctly, but
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from loadgen_grader_common import _validate_declare_body
+from loadgen_grader_common import _validate_report_body
 
 
 @pytest.mark.parametrize(
@@ -32,7 +32,7 @@ from loadgen_grader_common import _validate_declare_body
 )
 def test_rejects_bodies_that_cannot_become_a_report(body: object) -> None:
     with pytest.raises(ValueError):
-        _validate_declare_body(body)
+        _validate_report_body(body)
 
 
 @pytest.mark.parametrize(
@@ -54,4 +54,4 @@ def test_rejects_bodies_that_cannot_become_a_report(body: object) -> None:
     ],
 )
 def test_accepts_non_empty_incident_reports(body: object) -> None:
-    _validate_declare_body(body)  # must not raise
+    _validate_report_body(body)  # must not raise

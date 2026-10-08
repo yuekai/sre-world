@@ -740,8 +740,8 @@ def grader_fingerprint(sub: Substrate, spec_dir: Path) -> str:
         roots.append(sub.verifier_dir)
     selected_v2: set[Path] | None = None
     if is_v2:
-        from tools.verifier_v2.closure import selected_fingerprint_relpaths
-        from tools.verifier_v2.contract import load_contract
+        from verifier.closure import selected_fingerprint_relpaths
+        from verifier.contract import load_contract
 
         contract = load_contract(gt)
         selected_v2 = {
@@ -762,16 +762,6 @@ def grader_fingerprint(sub: Substrate, spec_dir: Path) -> str:
             h.update(path.relative_to(REPO_ROOT).as_posix().encode())
             h.update(b"\0")
             h.update(hashlib.sha256(path.read_bytes()).digest())
-            h.update(b"\0")
-    if is_v2:
-        materializers = verification.get("materializers", [])
-        if "legacy_outcome" in materializers:
-            dependency = REPO_ROOT / "verifier" / "oracle" / "outcome.py"
-            if not dependency.is_file():
-                _die(f"grader_fingerprint: selected dependency missing: {dependency}")
-            h.update(dependency.relative_to(REPO_ROOT).as_posix().encode())
-            h.update(b"\0")
-            h.update(hashlib.sha256(dependency.read_bytes()).digest())
             h.update(b"\0")
     return f"sha256:{h.hexdigest()}"
 
@@ -1089,7 +1079,11 @@ def digest_ref(
                 "digest in the lock — publish it first (push_images --layers-only)"
             )
     else:
-        digest = lock["base"].get(base)
+        # A task may be pinned to a different published image set than the
+        # substrate base (e.g. a task last qualified on a newer release).
+        digest = (lock.get("task_pins", {}).get(spec_dir.name) or {}).get(base) or lock[
+            "base"
+        ].get(base)
         if not digest:
             _die(f"{sub.name}/{spec_dir.name}: no base digest for {base!r} — republish")
     return f"{sub.registry}/{base}@{digest}"
@@ -1140,6 +1134,72 @@ def substrate_profiles(sub: Substrate) -> dict[str, Any]:
     return known
 
 
+# Profile keys an episode-start-anchored task never authors: the generator
+# derives them from task.metadata.agent_window_s / soak_s.
+WINDOW_DERIVED_PROFILE_KEYS = ("declare_deadline_s", "undeclared_evidence_min_s", "soak_cycles")
+
+
+def window_declare_deadline_s(sub: Substrate, agent_window_s: float) -> float:
+    """Episode-relative declaration deadline for an agent window."""
+    return float(agent_window_s) + float(sub.harbor.get("declare_grace_s", 90.0))
+
+
+def normalize_window_profiles(
+    sub: Substrate,
+    profiles_yaml: str | None,
+    profile_name: str,
+    agent_window_s: float,
+    soak_s: float,
+) -> str:
+    """Rewrite a task's load profile so its schedule matches its agent window.
+
+    The task's profile entry (or a bare ``{base: <profile>}`` override when the
+    scenario authors none) loses any authored deadline/soak keys, then gets:
+      * declare_deadline_s = agent window + the substrate's declare grace;
+      * soak_cycles = the soak window in whole load cycles;
+      * for a non-looping schedule, the base cycle repeated to fill the
+        deadline, so load never runs out while the agent is still working.
+    """
+    doc = yaml.safe_load(profiles_yaml) if profiles_yaml else None
+    doc = doc if isinstance(doc, dict) else {}
+    profiles = doc.setdefault("profiles", {})
+    entry = dict(profiles.get(profile_name) or {"base": profile_name})
+    for key in WINDOW_DERIVED_PROFILE_KEYS:
+        entry.pop(key, None)
+    base = substrate_profiles(sub).get(entry.get("base", profile_name))
+    if base is None:
+        _die(f"{sub.name}: profile {profile_name!r} has unknown base {entry.get('base')!r}")
+    loop = bool(entry.get("loop", getattr(base, "loop", False)))
+    cycles = [list(c) for c in (entry.get("cycles") or base.cycles)]
+    if not cycles:
+        _die(f"{sub.name}: profile {profile_name!r} resolves to no load cycles")
+
+    def duration(i: int) -> float:  # peak_s + trough_s of the i-th cycle in rotation
+        c = cycles[i % len(cycles)]
+        return float(c[0]) + float(c[2])
+
+    warmup = float(entry.get("warmup_s", base.warmup_s))
+    declare = window_declare_deadline_s(sub, agent_window_s)
+    # Cycles that fit before the deadline, walking the schedule in rotation.
+    n, elapsed = 0, warmup
+    while elapsed + duration(n) <= declare + 1e-9:
+        elapsed += duration(n)
+        n += 1
+    # Soak: the fewest following cycles that cover the soak window.
+    soak_cycles, covered = 0, 0.0
+    while covered < float(soak_s) - 1e-9:
+        covered += duration(n + soak_cycles)
+        soak_cycles += 1
+    if not loop:
+        entry.pop("cycles", None)  # re-emitted below, expanded to the window
+    entry["declare_deadline_s"] = declare
+    entry["soak_cycles"] = soak_cycles
+    if not loop:
+        entry["cycles"] = [list(cycles[i % len(cycles)]) for i in range(n)]
+    profiles[profile_name] = entry
+    return yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+
+
 def _scenario_profiles(sub: Substrate, spec_dir: Path | None) -> dict[str, Any]:
     """Resolve built-in plus task-local inline profiles for one scenario."""
     profiles = substrate_profiles(sub)
@@ -1161,6 +1221,17 @@ def _scenario_profiles(sub: Substrate, spec_dir: Path | None) -> dict[str, Any]:
         raw = loadgen.get("profilesYaml")
         if raw in (None, ""):
             continue
+        metadata = (spec.get("task") or {}).get("metadata") or {}
+        if "agent_window_s" in metadata and isinstance(raw, str):
+            # Window-anchored tasks author no deadline/soak; resolve the profile
+            # exactly as the generator stamps it.
+            raw = normalize_window_profiles(
+                sub,
+                raw,
+                str(metadata.get("profile")),
+                float(metadata["agent_window_s"]),
+                float(metadata.get("soak_s", 0.0)),
+            )
         try:
             document = yaml.safe_load(raw) if isinstance(raw, str) else raw
         except yaml.YAMLError as exc:
@@ -1343,7 +1414,33 @@ def read_lock(sub: Substrate) -> dict[str, Any] | None:
     for tid, entry in lock["tasks"].items():
         if not isinstance(entry, dict) or "layer_fingerprint" not in entry or "images" not in entry:
             _die(f"{p}: tasks.{tid} must carry layer_fingerprint + images")
+    pins = lock.get("task_pins", {})
+    if not isinstance(pins, dict) or any(
+        not isinstance(images, dict)
+        or any(not str(d).startswith("sha256:") for d in images.values())
+        for images in pins.values()
+    ):
+        _die(f"{p}: task_pins must map scenario id -> {{basename: sha256:...}}")
+    tools = lock.get("platform_tools")
+    if tools is not None and (
+        not isinstance(tools, dict)
+        or set(tools) != {"image", "digest"}
+        or not str(tools["digest"]).startswith("sha256:")
+    ):
+        _die(f"{p}: platform_tools must be {{image, digest: sha256:...}}")
     return lock
+
+
+def platform_tools_ref(sub: Substrate, lock: dict[str, Any]) -> tuple[str, str] | None:
+    """(image ref, digest) of the platform-owned agent tools image, or None.
+
+    Platform tools are pinned per substrate lock but are independent of
+    images.release: every task on the substrate mounts the same tools image.
+    """
+    tools = lock.get("platform_tools")
+    if tools is None:
+        return None
+    return f"{sub.registry}/{tools['image']}@{tools['digest']}", tools["digest"]
 
 
 def host_arch() -> str:

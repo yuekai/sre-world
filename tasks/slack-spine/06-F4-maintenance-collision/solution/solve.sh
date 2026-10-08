@@ -22,3 +22,7 @@ submit_incident_report <<'JSON'
   "mechanism": "The durable database maintenance controller scheduled real PostgreSQL checkpoints every 60 seconds at offset 35 from the load epoch, so each run overlapped the recurring write peak. I preserved enabled checkpoint maintenance and its period and duration, then moved the complete schedule to offset 55 so future checkpoints execute in the trough."
 }
 JSON
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

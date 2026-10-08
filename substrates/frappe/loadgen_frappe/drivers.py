@@ -39,11 +39,15 @@ from __future__ import annotations
 import asyncio
 import collections
 import hashlib
+import json
+import logging
 import os
 import random
 from typing import Any
 
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 # Reuse the Slack scheduler's env-derived target base + the shared exceptions.
 # Both substrates use LOADGEN_TARGET_BASE_URL as the single knob (chart wires
@@ -57,6 +61,7 @@ LOGGED_USER_URL    = f"{_TARGET_BASE}/api/method/frappe.auth.get_logged_user"
 DOCTYPE_LIST_URL   = f"{_TARGET_BASE}/api/resource/DocType"
 GET_LIST_URL       = f"{_TARGET_BASE}/api/method/frappe.client.get_list"
 GET_VALUE_URL      = f"{_TARGET_BASE}/api/method/frappe.client.get_value"
+GET_COUNT_URL      = f"{_TARGET_BASE}/api/method/frappe.client.get_count"
 TODO_RESOURCE_URL  = f"{_TARGET_BASE}/api/resource/ToDo"
 ENQUEUE_URL        = (
     f"{_TARGET_BASE}/api/method/frappe.core.doctype.prepared_report."
@@ -78,6 +83,25 @@ SESSION_POOL_SIZE = int(os.environ.get("FRAPPE_SESSION_POOL_SIZE", "32"))
 # peak rate vs supply aged from trough-rate production 25s earlier measured
 # 61.8% ok at peak with a 25s budget). Must stay under warmup_s (30).
 RQ_COMPLETE_BUDGET_S = float(os.environ.get("RQ_COMPLETE_BUDGET_S", "15"))
+# Pre-soak recovery waits for every accepted report, but only while the long
+# worker is visibly draining. Frappe enqueues Prepared Reports with
+# at_front_when_starved=True: once the long queue exceeds 16 jobs new reports
+# jump to the FRONT, so the oldest accepted reports sit behind a backlog of
+# newer ones until arrivals stop. Their own status therefore cannot measure
+# progress; the site-wide Completed count can. Recovery fails when that count
+# stops moving for RQ_RECOVERY_STALL_S (stranded/lost jobs or a dead worker),
+# or at the RQ_RECOVERY_MAX_S ceiling. The ceiling covers a full Frappe queue
+# (MAX_QUEUED_JOBS 500 + 50 per site) drained by the single long worker.
+RQ_RECOVERY_STALL_S = float(
+    os.environ.get(
+        "RQ_RECOVERY_STALL_S", os.environ.get("RQ_RECOVERY_TIMEOUT_S", "90")
+    )
+)
+RQ_RECOVERY_MAX_S = float(os.environ.get("RQ_RECOVERY_MAX_S", "900"))
+# One sweep over the pending reports per backoff: the single long worker
+# finishes at most about one job per second, so faster sweeps only load the web
+# tier (0.25s produced ~80 polls/s against two buried reports).
+RQ_RECOVERY_BACKOFF_S = float(os.environ.get("RQ_RECOVERY_BACKOFF_S", "1.0"))
 # Provisioning every session simultaneously can self-DoS the intentionally low
 # connection-cap fault before the steady load begins. Bound the setup burst and
 # retry any missed slots serially; terminal authentication failures still abort.
@@ -488,28 +512,51 @@ class RQEnqueueDriver:
 # PreparedReportLedger + RQCompleteDriver — job-COMPLETION grading (v19).
 # --------------------------------------------------------------------------- #
 class PreparedReportLedger:
-    """FIFO of ``(report_name, enqueue_loop_ts)`` shared by RQEnqueueDriver
-    (producer) and RQCompleteDriver (consumer).
+    """Phase-partitioned FIFO shared by the enqueue and completion drivers.
 
     Concurrency contract: arrivals run as concurrent tasks on one asyncio
-    loop, so a read-modify-write that spans an ``await`` CAN interleave.
-    ``pop_eligible`` therefore claims (pops) the entry synchronously — no
-    await between the peek and the pop — which makes the claim atomic under
-    cooperative scheduling. The deque is bounded so enqueue-heavy profiles
-    that never poll (e.g. frappe_dev_queue at 300 rps) stay O(1) memory; at
-    maxlen 8192 with the 15s default budget, entries evict pre-poll only
-    above ~546 enqueues/s — far past any calibrated profile. The margin is
-    budget-and-mix-sensitive: re-derive it before raising the budget or
-    shifting the driver mix enqueue-heavy.
+    loop. Claims and resolutions are synchronous, so no entry can be consumed
+    twice. Pre-soak nonterminal polls are requeued: accepted work remains
+    available for the bounded recovery boundary. Once that backlog is fully
+    verified, ``begin_soak`` switches both drivers to a fresh queue so the
+    graded rq_complete slice contains only post-repair traffic.
+
+    The ledger is bounded but never silently evicts. Overflow, duplicate report
+    identities, unresolved claims, and an incomplete phase transition all fail
+    loudly because losing accepted jobs would violate traffic conservation.
     """
 
     def __init__(self, maxlen: int = 8192) -> None:
-        self._q: collections.deque[tuple[str, float]] = collections.deque(
-            maxlen=maxlen
-        )
+        if maxlen <= 0:
+            raise ValueError(f"PreparedReportLedger maxlen must be positive, got {maxlen}")
+        self._maxlen = maxlen
+        self._pre_soak: collections.deque[tuple[str, float]] = collections.deque()
+        self._soak: collections.deque[tuple[str, float]] = collections.deque()
+        # Kept as a compatibility alias for focused tests and diagnostics.
+        self._q = self._pre_soak
+        self._claimed: dict[str, tuple[tuple[str, float], str]] = {}
+        self._known: set[str] = set()
+        self._phase = "pre_soak"
+        self._pre_soak_names: list[str] = []
+        self._pre_soak_completed = 0
 
     def append(self, name: str, ts: float) -> None:
-        self._q.append((name, ts))
+        if not name:
+            raise ValueError("PreparedReportLedger report name must be non-empty")
+        if name in self._known:
+            raise RuntimeError(f"PreparedReportLedger duplicate report identity: {name}")
+        if len(self._known) >= self._maxlen:
+            raise RuntimeError(
+                "PreparedReportLedger capacity exhausted; refusing to evict accepted "
+                f"work (maxlen={self._maxlen})"
+            )
+        entry = (name, ts)
+        self._known.add(name)
+        if self._phase == "pre_soak":
+            self._pre_soak.append(entry)
+            self._pre_soak_names.append(name)
+        else:
+            self._soak.append(entry)
 
     def pop_eligible(
         self, now: float, budget_s: float | None = None
@@ -519,12 +566,92 @@ class PreparedReportLedger:
         Synchronous peek-then-pop: atomic on the single loop (no await).
         """
         budget = RQ_COMPLETE_BUDGET_S if budget_s is None else budget_s
-        if self._q and (now - self._q[0][1]) >= budget:
-            return self._q.popleft()
+        queue = self._pre_soak if self._phase == "pre_soak" else self._soak
+        if queue and (now - queue[0][1]) >= budget:
+            return self._claim(queue, self._phase)
         return None
 
+    def pop_pre_soak_for_recovery(self) -> tuple[str, float] | None:
+        if self._phase != "pre_soak":
+            raise RuntimeError("PreparedReportLedger recovery requested after soak began")
+        if not self._pre_soak:
+            return None
+        return self._claim(self._pre_soak, "pre_soak")
+
+    def resolve(self, entry: tuple[str, float], *, completed: bool) -> None:
+        name = entry[0]
+        claimed = self._claimed.pop(name, None)
+        if claimed is None or claimed[0] != entry:
+            raise RuntimeError(f"PreparedReportLedger resolved an unclaimed entry: {name}")
+        phase = claimed[1]
+        if phase == "pre_soak" and not completed:
+            self._pre_soak.append(entry)
+            return
+        self._known.remove(name)
+        if phase == "pre_soak" and completed:
+            self._pre_soak_completed += 1
+
+    def begin_soak(self) -> None:
+        if self._phase != "pre_soak":
+            raise RuntimeError("PreparedReportLedger soak phase began more than once")
+        if self._pre_soak or self._claimed:
+            raise RuntimeError(
+                "PreparedReportLedger cannot begin soak with unresolved pre-soak work: "
+                f"queued={len(self._pre_soak)} claimed={len(self._claimed)}"
+            )
+        if self._pre_soak_completed != len(self._pre_soak_names):
+            raise RuntimeError(
+                "PreparedReportLedger pre-soak conservation mismatch: "
+                f"accepted={len(self._pre_soak_names)} "
+                f"verified={self._pre_soak_completed}"
+            )
+        self._phase = "soak"
+        self._q = self._soak
+
+    def begin_failed_soak(self) -> None:
+        """Keep unresolved accepted work in evidence after a solver-owned stall.
+
+        The graded soak uses a fresh queue, while the failed recovery receipt
+        conserves every accepted pre-soak report as still pending.
+        """
+        if self._phase != "pre_soak" or self._claimed or not self._pre_soak:
+            raise RuntimeError("PreparedReportLedger has no settled failed backlog")
+        self._phase = "soak"
+        self._q = self._soak
+
+    @property
+    def pre_soak_pending(self) -> int:
+        return len(self._pre_soak) + sum(
+            phase == "pre_soak" for _entry, phase in self._claimed.values()
+        )
+
+    @property
+    def pre_soak_accepted(self) -> int:
+        return len(self._pre_soak_names)
+
+    @property
+    def pre_soak_completed(self) -> int:
+        return self._pre_soak_completed
+
+    @property
+    def pre_soak_names_sha256(self) -> str:
+        canonical = "\n".join(sorted(self._pre_soak_names)).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    def _claim(
+        self,
+        queue: collections.deque[tuple[str, float]],
+        phase: str,
+    ) -> tuple[str, float]:
+        entry = queue.popleft()
+        name = entry[0]
+        if name in self._claimed:
+            raise RuntimeError(f"PreparedReportLedger double-claimed report: {name}")
+        self._claimed[name] = (entry, phase)
+        return entry
+
     def __len__(self) -> int:
-        return len(self._q)
+        return len(self._pre_soak) + len(self._soak)
 
 
 class RQCompleteDriver:
@@ -554,6 +681,13 @@ class RQCompleteDriver:
     name = "rq_complete"
     op = "GET"
     target = "/api/method/frappe.client.get_value"
+
+    @staticmethod
+    def accepted_work(name: str) -> tuple[str, str, str]:
+        """Resolve task-seeded mail alongside ordinary Prepared Reports."""
+        if name.startswith("email:"):
+            return "Email Queue", name.removeprefix("email:"), "Sent"
+        return "Prepared Report", name, "Completed"
 
     def __init__(
         self,
@@ -585,14 +719,14 @@ class RQCompleteDriver:
                 status=0, latency_ms=0.0, ok=False, correct=None, timeout=False
             )
         report_name, _enqueued_ts = entry
+        doctype, document_name, completed_status = self.accepted_work(report_name)
 
         slot, sid = self.pool.sid_for(seq)
-        import json as _json
 
         params = {
-            "doctype": "Prepared Report",
+            "doctype": doctype,
             "fieldname": "status",
-            "filters": _json.dumps({"name": report_name}),
+            "filters": json.dumps({"name": document_name}),
         }
 
         t_send = loop_time()
@@ -601,17 +735,21 @@ class RQCompleteDriver:
                 "GET", GET_VALUE_URL, session, sid, params=params
             )
             latency_ms = (loop_time() - t_send) * 1000.0
-        except asyncio.TimeoutError:
+        except TimeoutError:
+            self.ledger.resolve(entry, completed=False)
             raise _DriverTimeout((loop_time() - t_send) * 1000.0) from None
         except aiohttp.ClientError as exc:
+            self.ledger.resolve(entry, completed=False)
             raise _DriverClientError((loop_time() - t_send) * 1000.0, exc) from None
 
         if status == 401 and sid is not None:
             fresh = await self.pool.refresh_slot(session, slot)
+            self.ledger.resolve(entry, completed=False)
             if fresh is None:
                 raise _SessionExpired(latency_ms)
             raise _SessionExpired(latency_ms)
         if status != 200:
+            self.ledger.resolve(entry, completed=False)
             return DriverResult(
                 status=status,
                 latency_ms=latency_ms,
@@ -619,12 +757,251 @@ class RQCompleteDriver:
                 correct=None,
                 timeout=False,
             )
-        message = _json.loads(body).get("message") if body else None
+        try:
+            payload = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            self.ledger.resolve(entry, completed=False)
+            raise
+        message = payload.get("message") if isinstance(payload, dict) else None
         report_status = (message or {}).get("status")
+        completed = report_status == completed_status
+        self.ledger.resolve(entry, completed=completed)
         return DriverResult(
             status=status,
             latency_ms=latency_ms,
             ok=True,
-            correct=(report_status == "Completed"),
+            correct=completed,
             timeout=False,
         )
+
+    async def _prepared_report_count(
+        self, session: aiohttp.ClientSession, status: str, slot_seq: int
+    ) -> int | None:
+        """Site-wide Prepared Report count in ``status``; None if unreadable.
+
+        A diagnostic/progress probe only: an unreadable count never completes
+        or fails an accepted report, it just cannot extend the stall window.
+        """
+        _slot, sid = self.pool.sid_for(slot_seq)
+        params = {
+            "doctype": "Prepared Report",
+            "filters": json.dumps({"status": status}),
+        }
+        try:
+            http_status, body = await _do_request(
+                "GET", GET_COUNT_URL, session, sid, params=params
+            )
+            if http_status != 200:
+                return None
+            payload = json.loads(body)
+        except (TimeoutError, aiohttp.ClientError, json.JSONDecodeError):
+            return None
+        count = payload.get("message") if isinstance(payload, dict) else None
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        return count
+
+    async def recover_pre_soak(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        loop_time: Any,
+        stall_s: float | None = None,
+        max_s: float | None = None,
+        backoff_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Verify every accepted pre-soak report before opening the graded soak.
+
+        Waits while the long worker makes progress — an accepted report reaches
+        Completed or the site-wide Completed count grows — and fails loudly when
+        progress stalls for ``stall_s`` or the ``max_s`` ceiling is reached.
+        Accepted work is never skipped: success still requires every one.
+        """
+        stall = RQ_RECOVERY_STALL_S if stall_s is None else stall_s
+        ceiling = RQ_RECOVERY_MAX_S if max_s is None else max_s
+        backoff = RQ_RECOVERY_BACKOFF_S if backoff_s is None else backoff_s
+        if stall <= 0 or ceiling <= 0 or backoff <= 0:
+            raise ValueError(
+                "RQ recovery stall/max/backoff must be positive, got "
+                f"{stall}/{ceiling}/{backoff}"
+            )
+        started = loop_time()
+        hard_deadline = started + ceiling
+        last_progress = started
+        accepted = self.ledger.pre_soak_accepted
+        completed_before = self.ledger.pre_soak_completed
+        pending_at_boundary = self.ledger.pre_soak_pending
+        attempts = 0
+        last_observed: dict[str, str] = {}
+        terminal_failure: tuple[str, str] | None = None
+        site_completed_start = await self._prepared_report_count(
+            session, "Completed", 0
+        )
+        site_completed = site_completed_start
+        site_queued_start = await self._prepared_report_count(session, "Queued", 1)
+
+        def deadline() -> float:
+            return min(last_progress + stall, hard_deadline)
+
+        while self.ledger.pre_soak_pending:
+            round_size = self.ledger.pre_soak_pending
+            for _ in range(round_size):
+                if loop_time() >= deadline():
+                    break
+                entry = self.ledger.pop_pre_soak_for_recovery()
+                if entry is None:
+                    break
+                report_name = entry[0]
+                slot, sid = self.pool.sid_for(attempts)
+                doctype, document_name, completed_status = self.accepted_work(report_name)
+                params = {
+                    "doctype": doctype,
+                    "fieldname": "status",
+                    "filters": json.dumps({"name": document_name}),
+                }
+                try:
+                    status, body = await _do_request(
+                        "GET", GET_VALUE_URL, session, sid, params=params
+                    )
+                except (TimeoutError, aiohttp.ClientError) as exc:
+                    self.ledger.resolve(entry, completed=False)
+                    last_observed[report_name] = f"{type(exc).__name__}: {exc}"
+                    attempts += 1
+                    continue
+                attempts += 1
+                if status == 401 and sid is not None:
+                    await self.pool.refresh_slot(session, slot)
+                    self.ledger.resolve(entry, completed=False)
+                    last_observed[report_name] = "HTTP 401"
+                    continue
+                if status != 200:
+                    self.ledger.resolve(entry, completed=False)
+                    last_observed[report_name] = f"HTTP {status}"
+                    continue
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError as exc:
+                    self.ledger.resolve(entry, completed=False)
+                    raise RuntimeError(
+                        f"RQ recovery received malformed JSON for {report_name}: {exc}"
+                    ) from exc
+                message = payload.get("message") if isinstance(payload, dict) else None
+                if not isinstance(message, dict) or not isinstance(
+                    message.get("status"), str
+                ):
+                    self.ledger.resolve(entry, completed=False)
+                    raise RuntimeError(
+                        "RQ recovery could not read accepted Prepared Report "
+                        f"{report_name}; data may have been lost: {payload!r}"
+                    )
+                report_status = message["status"]
+                if report_status == completed_status:
+                    self.ledger.resolve(entry, completed=True)
+                    last_observed.pop(report_name, None)
+                    last_progress = loop_time()
+                elif report_status in {"Error", "Failed"}:
+                    self.ledger.resolve(entry, completed=False)
+                    terminal_failure = (report_name, report_status)
+                    last_observed[report_name] = report_status
+                    break
+                else:
+                    self.ledger.resolve(entry, completed=False)
+                    last_observed[report_name] = report_status
+
+            if terminal_failure or not self.ledger.pre_soak_pending:
+                break
+            # Accepted reports may be buried behind newer jobs (LIFO under
+            # starvation); the worker draining those is still progress.
+            observed = await self._prepared_report_count(
+                session, "Completed", attempts
+            )
+            if observed is not None:
+                if site_completed is not None and observed > site_completed:
+                    last_progress = loop_time()
+                if site_completed is None or observed > site_completed:
+                    site_completed = observed
+            remaining = deadline() - loop_time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(backoff, remaining))
+
+        if self.ledger.pre_soak_pending:
+            now = loop_time()
+            # The class says who owns the failure: a worker still draining at
+            # the ceiling is a harness capacity problem; a stalled worker with
+            # accepted work left is a system-under-test failure.
+            reason = (
+                "class=sut_terminal_failed: accepted report "
+                f"{terminal_failure[0]} entered {terminal_failure[1]}"
+                if terminal_failure
+                else (
+                    "class=harness_drain_ceiling: exceeded ceiling"
+                    if now >= hard_deadline
+                    else f"class=sut_no_worker_progress: no worker progress for {stall:g}s"
+                )
+            )
+            site_queued = await self._prepared_report_count(
+                session, "Queued", attempts
+            )
+            sample = sorted(last_observed.items())[:5]
+            detail = (
+                "RQ pre-soak recovery incomplete without losing or ignoring accepted "
+                f"work ({reason}): pending={self.ledger.pre_soak_pending}/{accepted}, "
+                f"elapsed_s={now - started:.1f}, stall_s={stall:g}, max_s={ceiling:g}, "
+                f"site_completed={site_completed_start}->{site_completed}, "
+                f"site_queued={site_queued_start}->{site_queued}, "
+                f"attempts={attempts}, last_observed={sample}"
+            )
+            if now >= hard_deadline and not terminal_failure:
+                raise TimeoutError(detail)
+            logger.warning("%s; continuing to graded failure evidence", detail)
+            self.ledger.begin_failed_soak()
+            return {
+                "schema_version": 1,
+                "phase": "pre_soak_recovery",
+                "pass": False,
+                "accepted": accepted,
+                "pending_at_boundary": pending_at_boundary,
+                "completed_before_recovery": completed_before,
+                "completed_during_recovery": (
+                    self.ledger.pre_soak_completed - completed_before
+                ),
+                "verified_completed": self.ledger.pre_soak_completed,
+                "remaining": self.ledger.pre_soak_pending,
+                "poll_attempts": attempts,
+                "duration_s": round(now - started, 6),
+                "accepted_names_sha256": self.ledger.pre_soak_names_sha256,
+            }
+
+        self.ledger.begin_soak()
+        # Diagnostics stay out of the receipt: its field set is a verifier
+        # contract (verifier/providers/redis_state.py).
+        logger.info(
+            "RQ pre-soak recovery drained: accepted=%d pending_at_boundary=%d "
+            "elapsed_s=%.1f site_completed=%s->%s site_queued_at_start=%s "
+            "stall_s=%g max_s=%g attempts=%d",
+            accepted,
+            pending_at_boundary,
+            loop_time() - started,
+            site_completed_start,
+            site_completed,
+            site_queued_start,
+            stall,
+            ceiling,
+            attempts,
+        )
+        completed_during = self.ledger.pre_soak_completed - completed_before
+        return {
+            "schema_version": 1,
+            "phase": "pre_soak_recovery",
+            "pass": True,
+            "accepted": accepted,
+            "pending_at_boundary": pending_at_boundary,
+            "completed_before_recovery": completed_before,
+            "completed_during_recovery": completed_during,
+            "verified_completed": self.ledger.pre_soak_completed,
+            "remaining": 0,
+            "poll_attempts": attempts,
+            "duration_s": round(loop_time() - started, 6),
+            "accepted_names_sha256": self.ledger.pre_soak_names_sha256,
+        }

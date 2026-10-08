@@ -6,7 +6,7 @@ WHY THIS IS NOT COVERED BY THE DRIFT CHECK
 `generate_tasks --all`. That proves the generator is REPRODUCIBLE — it emits the
 same bytes twice — and says nothing about whether those bytes RUN.
 
-Observed 2026-08-28: adding a module under `tools/verifier_v2/` and importing it
+Observed 2026-08-28: adding a module under `verifier/` and importing it
 from the already-vendored `contract.py`, without adding it to
 `closure.py::_COMMON`, regenerated all 44 tasks with a `contract.py` importing a
 file that was never copied alongside it. Grading would have raised ImportError
@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUNDLES = sorted(REPO_ROOT.glob("tasks/*/*/tests/verifier_v2"))
+BUNDLES = sorted(REPO_ROOT.glob("tasks/*/*/tests/verifier"))
 
 
 def _resolve_relative_import(
@@ -68,7 +68,7 @@ def _missing_imports(bundle: Path) -> list[str]:
         # type never reaches. Walking every node would flag 48 of 52 healthy
         # bundles -- a guard that cries wolf gets muted, which is worse than no
         # guard. What breaks grading is an import that fires on `import
-        # verifier_v2.contract`, and that is exactly the module-level set.
+        # verifier.contract`, and that is exactly the module-level set.
         for node in tree.body:
             if not isinstance(node, ast.ImportFrom) or not node.level:
                 continue
@@ -84,7 +84,7 @@ def _missing_imports(bundle: Path) -> list[str]:
                 missing.append(
                     f"{relpath}: imports `{dotted}` but "
                     f"{candidates[0].as_posix()} is not shipped "
-                    "(add it to tools/verifier_v2/closure.py)"
+                    "(add it to verifier/closure.py)"
                 )
     return missing
 
@@ -101,7 +101,7 @@ def test_shipped_bundle_imports_resolve(bundle: Path) -> None:
 
 def test_resolver_catches_a_missing_module(tmp_path: Path) -> None:
     """The guard must fail when the defect is present, not only pass when clean."""
-    bundle = tmp_path / "verifier_v2"
+    bundle = tmp_path / "verifier"
     (bundle / "materializers").mkdir(parents=True)
     (bundle / "__init__.py").write_text("")
     (bundle / "materializers" / "__init__.py").write_text("")
@@ -115,7 +115,7 @@ def test_resolver_catches_a_missing_module(tmp_path: Path) -> None:
 
 def test_resolver_handles_parent_package_imports(tmp_path: Path) -> None:
     """`from ..providers.outcome import` is the real shape in legacy_outcome.py."""
-    bundle = tmp_path / "verifier_v2"
+    bundle = tmp_path / "verifier"
     (bundle / "materializers").mkdir(parents=True)
     (bundle / "providers").mkdir()
     (bundle / "providers" / "__init__.py").write_text("")
@@ -143,7 +143,7 @@ def test_a_representative_bundle_actually_imports() -> None:
     # inside the committed task tree, which the drift check reports as
     # `only-in-committed` -- a guard must not create the failure it looks for.
     proc = subprocess.run(
-        [sys.executable, "-B", "-c", "import verifier_v2.contract"],
+        [sys.executable, "-B", "-c", "import verifier.contract"],
         cwd=bundle.parent,
         capture_output=True,
         text=True,

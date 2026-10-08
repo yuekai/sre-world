@@ -96,7 +96,7 @@ chart:
 images:
   # Hosted registry the custom images are published to (PR: hosted-canonical tasks
   # pull <registry>/<basename>:<release>; local dev side-loads <basename>:dev).
-  registry: ghcr.io/abundant-ai/sre-world
+  registry: ghcr.io/yuekai/sre-world
   # Immutable release tag; bumped by hand, published by tools/push_images.py, and
   # pinned by digest in images.lock.json. Never re-push a release with different bytes.
   # v3: last release whose base still carries the (now-retired, inert) dormant
@@ -105,7 +105,7 @@ images:
   # purges the dormant bytes from the published base and rebuilds every task
   # layer against it. This source-free split adds slack-app-builder and changes
   # slack-app bytes, so it must publish as v7 (v6 is already immutable).
-  release: v14
+  release: rc-slack-spine-v21-e7e7ff029130
   # chart values.images.<key> -> image basename, built by build_script with the
   # local ":dev" tag. Map ORDER is load-bearing: it fixes load_images ordering.
   custom:
@@ -150,6 +150,9 @@ harbor:
   # Platform contract: trusted setup may use public egress, but the chart must
   # restore its restricted policy before Harbor enters agent.run().
   agent_setup_egress_boundary: true
+  # Seconds the declaration deadline extends past the agent window (reconstructed
+  # from the Incident Arena tasks).
+  declare_grace_s: 90
   # Gates agent-start on the SUT fault-site being live (exec'd in the foothold).
   healthcheck:
     command: "curl -fsS svc-message:8000/healthz || exit 1"

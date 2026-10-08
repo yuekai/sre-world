@@ -1,0 +1,32 @@
+name: arena-parity
+
+# The reconstruction's regression gate (docs/DECISIONS.md D25): committed tasks
+# are in sync with their sources, every Incident Arena task regenerates
+# byte-for-byte (up to tools/arena_parity.py ALLOWED_DIFFERENCES), and the unit
+# tests pass. Needs no secrets, so it also runs on fork PRs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Generated tasks match their sources
+        run: uv run python -m tools.generate_tasks --all --check
+      - name: Incident Arena parity
+        run: ./validate.sh arena
+      - name: Unit tests
+        run: uv run python -m pytest -q

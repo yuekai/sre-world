@@ -13,6 +13,7 @@ Deterministic; no network (all HTTP calls are mocked at the ClientSession seam).
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -342,13 +343,15 @@ def test_ledger_fifo_eligibility_and_claim():
     assert led.pop_eligible(now=1e9) is None
 
 
-def test_ledger_maxlen_bounds_memory_on_enqueue_only_profiles():
+def test_ledger_capacity_fails_loudly_instead_of_evicting_accepted_work():
     led = PreparedReportLedger(maxlen=8)
-    for i in range(100):
+    for i in range(8):
         led.append(f"r{i}", float(i))
     assert len(led) == 8
-    # oldest surviving entry is r92 — earlier entries evicted, O(1) memory
-    assert led.pop_eligible(now=1e9) == ("r92", 92.0)
+    with pytest.raises(RuntimeError, match="refusing to evict accepted work"):
+        led.append("r8", 8.0)
+    # Overflow did not discard the oldest accepted identity.
+    assert led.pop_eligible(now=1e9) == ("r0", 0.0)
 
 
 @pytest.mark.asyncio
@@ -401,6 +404,249 @@ async def test_rq_complete_incorrect_on_nonterminal_or_failed_status():
         )
         assert res.ok is True
         assert res.correct is False, st
+
+
+@pytest.mark.asyncio
+async def test_slow_pre_soak_poll_is_retained_then_recovered_before_fresh_soak(
+    monkeypatch,
+):
+    pool = SessionPool(size=1)
+    pool._sids = ["sid-x"]
+    led = PreparedReportLedger()
+    led.append("PRE-1", -RQ_COMPLETE_BUDGET_S)
+    led.append("PRE-2", -RQ_COMPLETE_BUDGET_S)
+    driver = RQCompleteDriver(pool, led)
+    responses = collections.deque(
+        [
+            (200, json.dumps({"message": {"status": "Queued"}})),
+            (200, json.dumps({"message": {"status": "Completed"}})),
+            (200, json.dumps({"message": {"status": "Completed"}})),
+        ]
+    )
+
+    async def fake_do_request(_method, url, *_args, **_kwargs):
+        if url == drivers_module.GET_COUNT_URL:
+            return 200, json.dumps({"message": 0})
+        return responses.popleft()
+
+    monkeypatch.setattr(drivers_module, "_do_request", fake_do_request)
+    clock = _loop_time_factory()
+    pre_result = await driver.request(
+        MagicMock(), seq=0, x="x", loop_time=clock
+    )
+    assert pre_result.correct is False
+    assert led.pre_soak_pending == 2
+
+    receipt = await driver.recover_pre_soak(
+        MagicMock(), loop_time=clock, stall_s=1.0, max_s=1.0, backoff_s=0.001
+    )
+    assert receipt["pass"] is True
+    assert receipt["accepted"] == receipt["verified_completed"] == 2
+    assert receipt["remaining"] == 0
+
+    # Post-transition enqueue/completion uses only the fresh soak partition.
+    led.append("SOAK-1", -RQ_COMPLETE_BUDGET_S)
+    assert led.pop_eligible(now=1.0) == ("SOAK-1", -RQ_COMPLETE_BUDGET_S)
+
+
+@pytest.mark.asyncio
+async def test_unrepaired_pre_soak_backlog_returns_graded_failure(monkeypatch):
+    pool = SessionPool(size=1)
+    pool._sids = ["sid-x"]
+    led = PreparedReportLedger()
+    led.append("PRE-STUCK", -RQ_COMPLETE_BUDGET_S)
+    driver = RQCompleteDriver(pool, led)
+
+    async def still_queued(_method, url, *_args, **_kwargs):
+        if url == drivers_module.GET_COUNT_URL:
+            return 200, json.dumps({"message": 7})
+        return 200, json.dumps({"message": {"status": "Queued"}})
+
+    monkeypatch.setattr(drivers_module, "_do_request", still_queued)
+    receipt = await driver.recover_pre_soak(
+        MagicMock(),
+        loop_time=_loop_time_factory(),
+        stall_s=0.004,
+        max_s=1.0,
+        backoff_s=0.001,
+    )
+    assert receipt["pass"] is False
+    assert receipt["accepted"] == receipt["remaining"] == 1
+    assert receipt["verified_completed"] == 0
+    assert led.pre_soak_pending == 1
+    assert led._phase == "soak"
+    from verifier.providers.redis_state import _validate_backlog_recovery
+
+    _validate_backlog_recovery(receipt, where="stalled worker")
+    led.append("SOAK-1", 0.0)
+    assert led.pop_eligible(now=RQ_COMPLETE_BUDGET_S + 1.0) == ("SOAK-1", 0.0)
+
+
+@pytest.mark.asyncio
+async def test_failed_accepted_report_returns_graded_failure(monkeypatch):
+    pool = SessionPool(size=1)
+    pool._sids = ["sid-x"]
+    led = PreparedReportLedger()
+    led.append("PRE-FAILED", -RQ_COMPLETE_BUDGET_S)
+    driver = RQCompleteDriver(pool, led)
+
+    async def failed_report(_method, url, *_args, **_kwargs):
+        if url == drivers_module.GET_COUNT_URL:
+            return 200, json.dumps({"message": 0})
+        return 200, json.dumps({"message": {"status": "Failed"}})
+
+    monkeypatch.setattr(drivers_module, "_do_request", failed_report)
+    receipt = await driver.recover_pre_soak(
+        MagicMock(),
+        loop_time=_loop_time_factory(),
+        stall_s=90.0,
+        max_s=900.0,
+        backoff_s=0.001,
+    )
+
+    assert receipt["pass"] is False
+    assert receipt["accepted"] == receipt["remaining"] == 1
+    assert receipt["verified_completed"] == 0
+    assert receipt["poll_attempts"] == 1
+    assert led.pre_soak_pending == 1
+    assert led._phase == "soak"
+    from verifier.providers.redis_state import _validate_backlog_recovery
+
+    _validate_backlog_recovery(receipt, where="terminal failed report")
+
+
+class _LifoLongQueue:
+    """Virtual-time model of Frappe's starved long queue and one RQ worker.
+
+    Newer reports sit ahead of the accepted ledger reports (at_front_when_
+    starved); the worker completes one job per ``service_s`` of virtual time.
+    Every HTTP request advances the virtual clock by ``request_s``.
+    """
+
+    def __init__(self, buried: list[str], ahead: int, service_s: float = 1.0):
+        self.now = 0.0
+        self.request_s = 0.05
+        self.service_s = service_s
+        self.queue = [f"NEWER-{i}" for i in range(ahead)] + list(buried)
+        self.completed: set[str] = set()
+        self.site_completed = 100
+        self.worker_alive = True
+        self._busy_until = service_s
+
+    def clock(self) -> float:
+        return self.now
+
+    def _advance(self) -> None:
+        self.now += self.request_s
+        while self.worker_alive and self.queue and self.now >= self._busy_until:
+            self.completed.add(self.queue.pop(0))
+            self.site_completed += 1
+            self._busy_until += self.service_s
+
+    async def do_request(self, _method, url, *_args, params=None, **_kwargs):
+        self._advance()
+        filters = json.loads(params["filters"])
+        if url == drivers_module.GET_COUNT_URL:
+            if filters["status"] == "Completed":
+                return 200, json.dumps({"message": self.site_completed})
+            return 200, json.dumps({"message": len(self.queue)})
+        status = "Completed" if filters["name"] in self.completed else "Queued"
+        return 200, json.dumps({"message": {"status": status}})
+
+
+def _buried_recovery(monkeypatch, sim: _LifoLongQueue, names: list[str]):
+    pool = SessionPool(size=1)
+    pool._sids = ["sid-x"]
+    led = PreparedReportLedger()
+    for name in names:
+        led.append(name, -RQ_COMPLETE_BUDGET_S)
+    monkeypatch.setattr(drivers_module, "_do_request", sim.do_request)
+    return led, RQCompleteDriver(pool, led)
+
+
+@pytest.mark.asyncio
+async def test_recovery_waits_for_buried_reports_while_worker_drains(monkeypatch):
+    # Two accepted reports behind 300 newer jobs at 1 job/s: the fixed 90s
+    # window failed this healthy, draining queue.
+    names = ["PRE-OLD-1", "PRE-OLD-2"]
+    sim = _LifoLongQueue(names, ahead=300)
+    led, driver = _buried_recovery(monkeypatch, sim, names)
+
+    receipt = await driver.recover_pre_soak(
+        MagicMock(), loop_time=sim.clock, stall_s=90, max_s=900, backoff_s=1e-6
+    )
+
+    assert receipt["pass"] is True
+    assert receipt["verified_completed"] == receipt["accepted"] == 2
+    assert 300 < receipt["duration_s"] < 310
+    assert sim.site_completed - 100 >= 302
+    assert led.pre_soak_pending == 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_grades_failure_when_worker_stops(monkeypatch):
+    names = ["PRE-OLD-1"]
+    sim = _LifoLongQueue(names, ahead=300)
+    sim.worker_alive = False
+    led, driver = _buried_recovery(monkeypatch, sim, names)
+
+    receipt = await driver.recover_pre_soak(
+        MagicMock(), loop_time=sim.clock, stall_s=90, max_s=900, backoff_s=1e-6
+    )
+    assert receipt["pass"] is False
+    assert receipt["remaining"] == 1
+    assert 90 <= sim.now < 92
+    assert led.pre_soak_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_grades_stranded_report_after_worker_goes_idle(monkeypatch):
+    # The worker drains everything it holds, but the accepted report has no
+    # job: progress stops, so the stall window fails it.
+    sim = _LifoLongQueue([], ahead=50)
+    led, driver = _buried_recovery(monkeypatch, sim, ["PRE-STRANDED"])
+
+    receipt = await driver.recover_pre_soak(
+        MagicMock(), loop_time=sim.clock, stall_s=90, max_s=900, backoff_s=1e-6
+    )
+    assert receipt["pass"] is False
+    assert receipt["remaining"] == 1
+    assert 140 <= sim.now < 142
+
+
+@pytest.mark.asyncio
+async def test_recovery_ceiling_bounds_endless_progress(monkeypatch):
+    names = ["PRE-OLD-1"]
+    sim = _LifoLongQueue(names, ahead=5000)
+    led, driver = _buried_recovery(monkeypatch, sim, names)
+
+    with pytest.raises(TimeoutError, match="exceeded ceiling.*pending=1/1"):
+        await driver.recover_pre_soak(
+            MagicMock(), loop_time=sim.clock, stall_s=90, max_s=900, backoff_s=1e-6
+        )
+    assert 900 <= sim.now < 901
+
+
+@pytest.mark.asyncio
+async def test_unreadable_progress_probe_cannot_extend_recovery(monkeypatch):
+    names = ["PRE-OLD-1"]
+    sim = _LifoLongQueue(names, ahead=300)
+    led, driver = _buried_recovery(monkeypatch, sim, names)
+    real = sim.do_request
+
+    async def count_unavailable(method, url, *args, **kwargs):
+        if url == drivers_module.GET_COUNT_URL:
+            sim._advance()
+            return 500, "{}"
+        return await real(method, url, *args, **kwargs)
+
+    monkeypatch.setattr(drivers_module, "_do_request", count_unavailable)
+    receipt = await driver.recover_pre_soak(
+        MagicMock(), loop_time=sim.clock, stall_s=90, max_s=900, backoff_s=1e-6
+    )
+    assert receipt["pass"] is False
+    assert receipt["remaining"] == 1
+    assert 90 <= sim.now < 92
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,9 @@
-The message delivery path has been flaky even though traffic looks normal. Work
-out what is actually causing it, make the narrowest durable repair you can, and
-make sure the problem stays gone after one restart and a sustained recovery
-period.
+The message delivery path has been flaky even though traffic looks normal.
+Figure out what is actually causing it and fix the problem without broad or
+unrelated changes. Make sure it stays gone after one restart and remains stable
+while traffic continues.
 
-Once you trust the fix, file one report with `submit_incident_report`. Check
-`submit_incident_report --help` first, use its canonical service and component
-vocabulary, and describe the causal chain rather than only the symptom. The
-first report is final.
+When you trust the fix, run `declare_repair_complete` to hand the system back —
+that ends your session, so leave nothing half-applied. Writing up what you
+found with `submit_incident_report` is optional and does not end the session;
+if you do, describe the causal chain more than the symptom.

@@ -42,3 +42,7 @@ submit_incident_report \
   --service message \
   --component message.sequencer \
   --mechanism "A session-scoped sequencer handoff retained a retry-reused DB lease and left one seeded cohort's channel_seq row locked in an idle transaction. Its writes queued and exhausted the shared pool. Persisted the narrow request-scoped handoff mode, restarted the service, verified the request mode survived boot, the row lock stayed absent, and messaging recovered."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

@@ -1,0 +1,49 @@
+name: kind-netpol
+
+# The trusted Kind cluster must enforce the charts' NetworkPolicies the way task
+# bring-ups need (probes, DNS and reply traffic pass; ingress is restricted).
+# kind's default CNI broke this silently in 2026-10 (docs/plans/2026-10-07-kind-calico.md),
+# so the smoke runs on changes to the cluster config, the environment or the
+# chart templates, and weekly to catch upstream kind/Calico changes. Needs no
+# secrets, so it also runs on fork PRs.
+
+on:
+  pull_request:
+    paths:
+      - substrates/*/checks/kind_surface_config.yaml
+      - substrates/slack-spine/chart/templates/**
+      - tools/run_verifier_v2_matrix.py
+      - tools/kind_netpol_smoke.py
+      - .github/workflows/kind-netpol.yaml
+      - .github/actions/setup-kind-kubectl/**
+  push:
+    branches: [main]
+    paths:
+      - substrates/*/checks/kind_surface_config.yaml
+      - substrates/slack-spine/chart/templates/**
+      - tools/run_verifier_v2_matrix.py
+      - tools/kind_netpol_smoke.py
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+      - name: Install kind + kubectl
+        uses: ./.github/actions/setup-kind-kubectl
+        with:
+          kind-version: v0.32.0
+          kubectl-version: v1.36.1
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Kind NetworkPolicy smoke
+        run: ./validate.sh kind

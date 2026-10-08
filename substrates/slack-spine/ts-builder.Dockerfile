@@ -2,7 +2,10 @@
 # it is never a long-running app or agent container.
 FROM node:22-bookworm-slim
 WORKDIR /workspace
-RUN corepack enable
+# corepack resolves an unpinned pnpm to the newest release at build time; pnpm 12
+# links the workspace package into the hoisted runtime payload differently and
+# breaks the copy below. 11.24.0 is the version the published v21 images used.
+RUN corepack enable && corepack prepare pnpm@11.24.0 --activate
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/servicekit/package.json packages/servicekit/package.json
 COPY services/app/package.json services/app/package.json

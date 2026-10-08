@@ -64,8 +64,10 @@ def helm_values(task: str) -> dict[str, Any]:
     resolved = substrate_mod._scenario_profiles(sub, spec_dir).get(profile_name)
     if resolved is None:
         _die(f"{sub.name}/{spec_dir.name}: cannot resolve dev fence profile")
-    evidence_floor = resolved.effective_undeclared_evidence_min_s()
-    if deadline < evidence_floor:
+    # undeclared_evidence_min_s is a retired compatibility field (undeclared
+    # finalization is gone); honour it only where a profile still sets it.
+    evidence_floor = resolved.undeclared_evidence_min_s
+    if evidence_floor is not None and deadline < evidence_floor:
         _die(
             f"{sub.name}/{spec_dir.name}: dev fence deadline {deadline} is below "
             f"the audited undeclared evidence floor {evidence_floor}"

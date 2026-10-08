@@ -1,3 +1,6 @@
+# RECONSTRUCTED 2026-10: values below were brought in line with the Incident
+# Arena task generated from this scenario (tools/arena_backport.py). Comments
+# may still describe the 2026-09-19 version of the fault.
 # scenarios/slack-spine/09-I1-seq-lock-leak/spec.yaml
 # Single source of truth for the 09-I1 Tier-2 (image) fault. tools/generate_tasks.py
 # compiles this + the sibling files (instruction.md, ground-truth.yaml, solve.sh) into
@@ -44,11 +47,15 @@ task:
     # failure mode in experiment d0ef7c5f: the OLD 150s `write` profile stopped all load at
     # 2.5 min while agents ran to ~600s over a DEAD system, so 0/11 ever declared. Mirrors
     # 07-M2b's proven long-write pairing.
-    agent_timeout_sec: 1500
+    agent_timeout_sec: 3930.0
     # Verifier poll budget must cover the full episode (declare_deadline 1530s + 4 soak
     # cycles): an early-quitting agent leaves test.sh polling until the loadgen finishes.
-    verifier_timeout_sec: 2160
+    verifier_timeout_sec: 4770.0
 
+    agent_window_s: 3600.0
+    soak_s: 180.0
+    build_timeout_sec: 1800.0
+    healthcheck_retries: 97
 substrate: "slack-spine"
 
 # The fault. tier: image (Tier-2, multi-tier plan M3) = a PER-TASK FAULT LAYER: a thin
@@ -79,4 +86,4 @@ fault:
     (message, message.sequencer).
   values: {}
   layer:
-    app: null   # layer/app/Dockerfile (FROM ${BASE} + faulted message.ts + ENV arm)
+    app:        # layer/app/Dockerfile (FROM ${BASE} + faulted message.ts + ENV arm)

@@ -590,7 +590,7 @@ def _check_v1(sv: ScenarioValues) -> list[Finding]:
             f"    1. add `verification: {{version: 2}}` to "
             f"scenarios/{sv.task}/ground-truth.yaml and give it\n"
             "       the v2 oracle contract the task actually needs "
-            "(tools/verifier_v2/contract.py), then\n"
+            "(verifier/contract.py), then\n"
             "       re-generate and re-run the reference episode — v2 grades from a "
             "different contract,\n"
             "       so a v1 pass is not evidence the v2 task passes.\n"

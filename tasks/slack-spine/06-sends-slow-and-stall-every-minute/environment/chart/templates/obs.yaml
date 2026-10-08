@@ -109,6 +109,28 @@ spec:
     - name: http
       port: 9090
       targetPort: http
+---
+# Keep raw metrics behind the MCP facade. Agent shells can reach namespace
+# services, so service discovery alone is not a sufficient boundary.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-ingress
+  labels:
+    {{- include "slack.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: prometheus
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: obs-mcp
+      ports:
+        - {protocol: TCP, port: 9090}
 {{- end }}
 {{- if include "slack.enabled" (dict "root" $ "key" "loki") }}
 ---
@@ -161,6 +183,31 @@ spec:
     - name: http
       port: 3100
       targetPort: http
+---
+# Promtail may ingest raw logs and obs-mcp may query them. No agent-reachable
+# application pod gets direct access to the unredacted Loki API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki-ingress
+  labels:
+    {{- include "slack.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: loki
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: loki
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: obs-mcp
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: promtail
+      ports:
+        - {protocol: TCP, port: 3100}
 {{- end }}
 {{- if include "slack.enabled" (dict "root" $ "key" "promtail") }}
 ---
@@ -438,4 +485,26 @@ spec:
     - name: http
       port: 9187
       targetPort: http
+---
+# Prometheus is the sole scraper for exporter metrics; agent-facing queries
+# continue through obs-mcp and Prometheus instead of reaching this API directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-exporter-ingress
+  labels:
+    {{- include "slack.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: postgres-exporter
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: postgres-exporter
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: prometheus
+      ports:
+        - {protocol: TCP, port: 9187}
 {{- end }}

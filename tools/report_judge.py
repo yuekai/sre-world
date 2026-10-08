@@ -1,6 +1,6 @@
 """Trusted qualification adapter for advisory verifier-v2 report judges.
 
-This module is deliberately outside ``tools.verifier_v2`` and therefore outside
+This module is deliberately outside ``verifier`` and therefore outside
 the source closure copied into generated tasks.  It may execute an injected
 host-side provider, but the deterministic evaluator remains network- and
 credential-free.
@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
-from tools.verifier_v2.assessment import build_report_assessment
-from tools.verifier_v2.errors import EvidenceError
-from tools.verifier_v2.report import dump_json
+from verifier.assessment import build_report_assessment
+from verifier.errors import EvidenceError
+from verifier.report import dump_json
 
 
 class ReportJudgeProvider(Protocol):

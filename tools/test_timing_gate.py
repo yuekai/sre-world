@@ -63,7 +63,7 @@ def test_bring_up_offsets_differ_per_substrate() -> None:
     600 s. Under the pre-gate 300 s setup assumption that is 1200 vs 900 — a
     300 s difference, which is exactly what a copied deadline loses.
     """
-    frappe = _resolve("frappe/03-F1-connection-cap")
+    frappe = _resolve("frappe/07-desk-and-queue-outage")
     slack = _resolve("slack-spine/06-F4-maintenance-collision")
 
     assert frappe.ready_timeout_s == 900.0
@@ -95,11 +95,15 @@ def test_every_frappe_scenario_shares_the_900s_readiness_budget() -> None:
 def test_resolve_sees_a_deadline_inherited_whole_from_the_substrate() -> None:
     """The hole in the pre-gate check: 09-I1 selects `write_eval` with NO inline
     overlay, so the old inline-only reader returned None and skipped it entirely.
-    Its real deadline is 1530 against a 1500 s budget."""
+    The task is episode-start anchored, so its deadline is derived from its agent
+    window plus the substrate's declare grace rather than read from the profile."""
     t = _resolve("slack-spine/09-I1-seq-lock-leak")
+    sub = substrate_mod.load("slack-spine")
     assert t.profile == "write_eval"
-    assert t.declare_deadline_s == 1530.0
-    assert t.agent_timeout_s == 1500.0
+    assert t.agent_window_s == 3600.0
+    assert t.declare_deadline_s == substrate_mod.window_declare_deadline_s(sub, 3600.0)
+    assert t.declare_deadline_s == 3690.0
+    assert t.agent_timeout_s == 3930.0
     assert "inherited whole" in t.deadline_source
 
     spec = yaml.safe_load(
@@ -110,7 +114,10 @@ def test_resolve_sees_a_deadline_inherited_whole_from_the_substrate() -> None:
 
 def test_resolve_reads_an_inline_overlay_and_attributes_the_file() -> None:
     t = _resolve("slack-spine/06-F3-split-sequencer")
-    assert t.declare_deadline_s == 4590.0
+    sub = substrate_mod.load("slack-spine")
+    # The anchored window, not the overlay's authored number, sets the deadline.
+    assert t.agent_window_s == 3600.0
+    assert t.declare_deadline_s == substrate_mod.window_declare_deadline_s(sub, 3600.0)
     assert t.deadline_source.startswith("scenarios/slack-spine/06-F3-split-sequencer/")
     assert "profilesYaml" in t.deadline_source
 
@@ -213,13 +220,14 @@ def test_d_warns_when_the_poll_budget_would_outlast_the_verifier() -> None:
 
 def test_the_committed_poll_budgets_all_fit(  # the fleet, not a synthetic
 ) -> None:
-    for scenario in ("slack-spine/09-I1-seq-lock-leak", "frappe/03-F1-connection-cap"):
+    for scenario in ("slack-spine/09-I1-seq-lock-leak", "frappe/07-desk-and-queue-outage"):
         t = _resolve(scenario)
         assert t.poll_budget_s + timing_gate.POLL_TAIL_MARGIN_S <= t.verifier_timeout_s
-    # 09-I1's committed tests/test.sh bakes exactly the derived iteration count.
+    # 09-I1's committed tests/test.sh bakes exactly the derived poll budget in
+    # seconds: verifier_timeout_sec 4770 - 180 = 4590.
     test_sh = (REPO_ROOT / "tasks/slack-spine/09-I1-seq-lock-leak/tests/test.sh").read_text()
-    assert '-lt 660 ' in test_sh  # int((2160 - 180) // 3)
-    assert _resolve("slack-spine/09-I1-seq-lock-leak").poll_budget_s == 660 * 3
+    assert "poll_deadline=$(( $(date +%s) + 4590 ))" in test_sh
+    assert _resolve("slack-spine/09-I1-seq-lock-leak").poll_budget_s == 4590.0
 
 
 def test_eval_ready_false_capture_harnesses_are_exempt_from_a_only() -> None:
@@ -263,13 +271,13 @@ def test_nearest_cycle_boundary_matches_the_loadgen_walk() -> None:
 
 
 def test_the_frappe_fleet_deadline_sits_on_its_cycle_boundary() -> None:
-    t = _resolve("frappe/03-F1-connection-cap")
+    t = _resolve("frappe/07-desk-and-queue-outage")
     assert t.loop is True
-    assert t.declare_deadline_s == 3030.0
+    # 3600 s agent window + 90 s declare grace lands exactly on a 60 s cycle.
+    assert t.declare_deadline_s == 3690.0
     boundary = timing_gate.nearest_cycle_boundary_s(t.warmup_s, t.cycles, t.declare_deadline_s)
-    assert boundary == 3030.0
-    # ...and the next one up is +60, which is why the 360 s re-sizing is 3090.
-    assert timing_gate.nearest_cycle_boundary_s(t.warmup_s, t.cycles, 3031.0) == 3090.0
+    assert boundary == 3690.0
+    assert timing_gate.nearest_cycle_boundary_s(t.warmup_s, t.cycles, 3691.0) == 3750.0
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +321,11 @@ def test_every_waiver_carries_a_reason_and_names_real_invariants() -> None:
         assert waiver.summary.endswith("(full reason: tools/timing_gate.py WAIVERS)")
 
 
-def test_the_two_expected_release_waivers_are_present() -> None:
-    p1 = timing_gate.WAIVERS["slack-spine/13-P1-distractor-volume-shell"]
-    assert "a" in p1.invariants and "image layer" in p1.reason
-    i1 = timing_gate.WAIVERS["slack-spine/09-I1-seq-lock-leak"]
-    assert "a" in i1.invariants and "thin margin" in i1.reason
+def test_window_anchored_release_tasks_need_no_waiver() -> None:
+    """13-P1 and 09-I1 were waived under the bring-up-relative rule; anchored to
+    episode start (agent_window_s) they satisfy (a) outright."""
+    assert "slack-spine/13-P1-distractor-volume-shell" not in timing_gate.WAIVERS
+    assert "slack-spine/09-I1-seq-lock-leak" not in timing_gate.WAIVERS
 
 
 def test_a_waiver_may_name_a_task_that_is_not_on_main_yet() -> None:
@@ -379,31 +387,32 @@ def test_the_setup_constant_is_selectable_and_defaults_to_360() -> None:
     assert timing_gate.active_agent_setup_s() == 360.0
 
 
-def test_the_frappe_fleet_passes_under_the_legacy_constant_and_fails_under_360() -> None:
-    """What the 360 constant actually changes, pinned as a number."""
-    sub, spec_dir = substrate_mod.find_scenario("frappe/03-F1-connection-cap")
+def test_the_anchored_frappe_fleet_is_independent_of_the_setup_constant() -> None:
+    """Episode-start anchoring takes readiness and agent setup off the clock, so
+    the 300 -> 360 setup constant no longer moves what (a) requires."""
+    sub, spec_dir = substrate_mod.find_scenario("frappe/07-desk-and-queue-outage")
     spec = yaml.safe_load((spec_dir / "spec.yaml").read_text())
 
-    legacy = timing_gate.resolve(sub, spec_dir, spec, agent_setup_s=300.0)
-    assert legacy.required_declare_s == 3000.0 <= legacy.declare_deadline_s == 3030.0
-    assert [f for f in timing_gate.check(legacy) if f.severity != "warning"] == []
-
-    strict = timing_gate.resolve(sub, spec_dir, spec, agent_setup_s=360.0)
-    assert strict.required_declare_s == 3060.0
-    assert [f.invariant for f in timing_gate.check(strict)] == ["a"]  # waived, not error
-    assert timing_gate.check(strict)[0].severity == "waived"
+    for setup in (timing_gate.LEGACY_AGENT_SETUP_S, timing_gate.AGENT_SETUP_S):
+        t = timing_gate.resolve(sub, spec_dir, spec, agent_setup_s=setup)
+        assert t.agent_window_s == 3600.0
+        assert t.required_declare_s == 3600.0 <= t.declare_deadline_s == 3690.0
+        assert [f for f in timing_gate.check(t) if f.invariant == "a"] == []
 
 
 def test_enforce_raises_with_every_hard_failure_for_an_unwaived_task(monkeypatch, tmp_path) -> None:
     sub, spec_dir = substrate_mod.find_scenario("slack-spine/09-I1-seq-lock-leak")
     spec = yaml.safe_load((spec_dir / "spec.yaml").read_text())
-    monkeypatch.delitem(timing_gate.WAIVERS, "slack-spine/09-I1-seq-lock-leak")
+    # An agent_timeout_sec shorter than the agent window: Harbor would kill the
+    # agent inside its own window, which the anchored rule (a) refuses.
+    spec["task"]["metadata"]["agent_timeout_sec"] = 1500.0
+    monkeypatch.delitem(timing_gate.WAIVERS, "slack-spine/09-I1-seq-lock-leak", raising=False)
     with pytest.raises(SystemExit) as exc:
         timing_gate.enforce(sub, spec_dir, spec)
     message = str(exc.value)
     assert "EPISODE-TIMING INVARIANT VIOLATED" in message
-    assert "300 + 360 + 1500 + 0 = 2160" in message
-    assert "SHORT BY 630" in message
+    assert "episode-start anchored" in message
+    assert "agent_timeout_sec=1500 s < agent_window_s 3600" in message
     assert "write_eval" in message
 
 

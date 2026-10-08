@@ -101,7 +101,7 @@ def test_episode_start_failure_is_exposed_to_readiness_gate(
     monkeypatch.setattr(sidecar, "EPISODE_DONE_JSON", grader_dir / "episode_done.json")
     state = {"lg": None}
 
-    sidecar._record_episode_start_failure(state, RuntimeError("boot capture failed"))
+    sidecar._record_episode_setup_failure(state, RuntimeError("boot capture failed"))
 
     assert state["episode_ready_error"] == "RuntimeError: boot capture failed"
     assert json.loads(sidecar.EPISODE_DONE_JSON.read_text()) == {

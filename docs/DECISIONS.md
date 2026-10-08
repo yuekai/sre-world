@@ -6,6 +6,10 @@ The current repo structure is D14's substrate/scenario model with D22's packagin
 boundary: authored `substrates/` + `scenarios/` and committed, directly runnable
 self-contained tasks under `tasks/`.
 
+Entries are in ascending order; a new decision takes the next number. D17 was
+never assigned (the original skipped it), and `tools/test_doc_links.py` checks
+the order.
+
 ---
 
 ## D1 (2026-06-06) — Lead claim: causal-distance grading
@@ -57,6 +61,127 @@ self-contained tasks under `tasks/`.
 - Baseline logs must carry a **realistic noise floor** (sterile-clean baseline = grep-and-win).
 - Reset = teardown + pristine PG volume until snapshot-resume is empirically validated (Q10 stays a named exit check).
 - PRD backing-services wording (Postgres+RabbitMQ vs actual SUT stacks) must be reconciled in the v0.2 rewrite.
+
+## D6 (2026-06-06) — Oracle v0.2: cross-linked dual-gate, report-as-action, frozen soak
+**Decision:** Concretizes D3 after a 3-reviewer red-team (24 findings, 14 high). The dictated attribution rubric — (1) outcome metrics recover, (2) the agent's reasoning demonstrably fingered the pool — is implemented as:
+1. **Outcome gate = server-side conjunction:** P99-vs-load in golden band through dwell+soak ∧ bounded error rate ∧ **goodput ≥ (1−tol)×offered RPS** (replaces the generator-liveness invariant, which a server-side throttle/cache defeats) ∧ pool-saturation signal ≈ 0 at peak (so "slow but completing" still fails).
+2. **Attribution gate = the structured report**, submitted via an explicit `submit_incident_report(service, component, mechanism, evidence_refs)` tool (agent-neutral; schema forbids enumerations). service+component = exact match vs a **closed component registry published to the agent**; mechanism = LLM-judge **partial credit only** until judge FP/FN is measured.
+3. **Cross-link (the load-bearing fix):** a minimality/blast-radius predicate over the config diff is wired INTO the gate — mutated keys must be confined to the attributed component. Without it, the red-team showed shotgun-overprovision + reverse-engineered attribution passes both gates and D3's anti-overprovisioning claim is false.
+4. **Trajectory/reasoning-chain inspection is a reported research metric, never a gate** — gating on it violates "grade outcome, not procedure," is non-comparable across harnesses (trace-verbosity artifact), and rewards hypothesis spam. ⚠️ *This modulates Andre's dictated intent (reasoning-chain inspection as the key signal) — flagged for veto; the report gate captures the same fact agent-neutrally.*
+5. **Episode termination:** agent declares resolved → frozen (zero token spend) → soak (1 full load cycle) → verdict computed once, never pollable. Telemetry stays visible (the SRE view); the oracle verdict and baseline curve do not. Time-to-declaration reported as tie-break.
+6. **Scoring map:** the report *instantiates* Detection(filed)/Localization(fields)/Diagnosis(mechanism); Remediation = outcome gate only; headline = conjunction — kills the D3 double-counting risk. **Detection dropped as a scored stage in v1** (degenerate without no-fault controls; controls deferred to v2 as a detection-ROC contribution) — resolves Q5.
+
+## D7 (2026-06-07) — Answer-key lint is a validation gate (incident-driven)
+**Incident:** the spike's first agent episode was contaminated — `sut/config/app.yaml` shipped with `# FAULTED. golden fix: 16` comments (plus "fault site" / oracle-design narration in `db.py`, `main.py`, `compose.yaml`) copied verbatim from the build contract into agent-visible artifacts. The agent under test read them on turn 2: detection was authentic (it cited real telemetry), but localization and fix values were open-book. The harness exit criteria are unaffected; the agent-capability datapoint is invalidated.
+
+**Decision:** every scenario must pass an **answer-key lint** before any episode runs: scan all agent-visible artifacts for fault markers, golden values, oracle/anti-cheat references, and benchmark framing (`spike/harness/lint_scenario.py`, wired into `run_episode` — fails loudly). This extends D2's gate-3: "no reachable known-good reference" now includes *no in-band annotations*. Degenerate-fix emulation knobs renamed to production-plausible names (`MAX_INFLIGHT_REQUESTS`, `RESPONSE_CACHE_ENABLED`).
+
+**Current enforcement:** the answer-key lint now runs through `./validate.sh lint` and is included in `./validate.sh smoke` and CI. Direct task runs, calibration, and hosted trials do not invoke it automatically; callers must run the validation gate first.
+
+**Lesson for the benchmark:** spec-to-artifact contamination is a leak channel nobody red-teamed — scenario-authoring tooling itself must be treated as part of the threat model. For the library phase: generate scenario artifacts and grading manifests from separate sources, and lint at gate-validation time.
+
+## D8 (2026-06-07) — Harbor port works; the scenario maps cleanly onto Harbor
+> Updated by D14: the substrate is now a single Slack-clone Helm chart on the helm backend (kind/k3d per trial); the docker-provider `main`+sibling-containers+shared-volumes mapping is superseded — the oracle/observability/grader-isolation design carries into `substrates/slack-spine/`.
+
+**Decision:** Ported the validated spike into a real Harbor task (`spike/harbor-task/pool-exhaustion/`) and proved it end-to-end: golden (`-a oracle`) → **PASS** (gate1/gate2/minimality/reward all 1.0) through Harbor's own pipeline + our custom verifier. The "live multi-container + background-load + custom-Python-oracle" shape — unusual for Harbor — fits without forcing it into a test.sh.
+
+**The mapping (verified against Harbor source, runs locally via the installed `harbor` CLI):**
+- SUT app runs in Harbor's hardcoded `main` service (where the agent's `environment.exec()` lands); `postgres` + a `loadgen` sidecar are siblings; shared named volume `/shared`.
+- Agent "declares" by writing `/shared/incident_report.json`; the loadgen sidecar watches for it, runs the soak, writes `episode_done.json`.
+- Grading = a host-side custom `BaseVerifier` that polls `episode_done.json`, downloads `/shared` + `/config/app.yaml` from the live env, assembles a spike run-dir, and calls the **existing** `oracle.evaluate.evaluate_run` (zero oracle logic duplicated). Returns `VerifierResult(rewards=...)`.
+- Golden = `solution/solve.sh` run by Harbor's OracleAgent; null = Harbor's NopAgent.
+
+**Gotchas learned (save the next person hours):**
+1. `Task.is_valid_dir()` requires `tests/test.sh` to EXIST even when using a custom verifier — else Harbor silently treats the dir as an empty dataset ("Either datasets or tasks must be provided"). Ship a no-op `tests/test.sh` stub; `VerifierFactory` picks `import_path` ahead of it.
+2. **`import_path` is a JOB/TRIAL-level field, NOT a task.toml `[verifier]` field.** task.toml `[verifier]` only has network/timeout/env/environment_mode. Pass the verifier via CLI `--verifier-import-path module:Class` (task-dir name has a hyphen → top-level import, no dotted path), with PYTHONPATH = task `verifier/` + `spike/`.
+3. `harbor run` prompts to confirm host-env access when `[verifier.env]` references host vars → pass `--yes` for unattended runs.
+4. Custom verifiers must RETURN `VerifierResult`, never write reward.txt (that's the built-in verifier's path).
+
+**Open (port-specific, not blocking):** (a) loadgen sidecar runs on its own clock — for a *real* long-running agent the schedule must hold load until declare rather than racing `declare_deadline_s` (fine for oracle/nop; fix before a real-agent Harbor run). (b) network isolation of loadgen from `main` is convention-level here (no docker socket in `main`); kernel-level is the E2B/k8s hardening.
+
+**Closed on PR #6 review:** golden `solve.sh` can still repair and declare during warmup, but the loadgen now records the early `declare_ts_s` separately from `soak_start_s` and floors the graded soak at `warmup_s`. That removes the cold-pool false failure Andre observed without inserting artificial sleeps into the golden scripts.
+
+## D9 (2026-06-07) — Centralized logging + tamper-resistant grader split (Harbor task)
+> Updated by D14: the substrate is now a single Slack-clone Helm chart on the helm backend (kind/k3d per trial); the Compose shared-volume `obs`/`grader` split is superseded — the grader-isolation design carries into `substrates/slack-spine/`.
+
+**Trigger:** Andre asked why the agent (shelled into `main`) couldn't see the Postgres logs. Root cause: Postgres logged to its own container; `/shared` was only mounted in `main`+`loadgen`. Surfaced a second, worse issue: `/shared` (rw in `main`, where the agent has a ROOT shell) also held the grader's own inputs (`loadgen.jsonl`, `metrics.jsonl`, `episode_done.json`) — an adversarial agent could `ls /shared`, write a fake `episode_done.json` + fake-healthy `loadgen.jsonl`, and score PASS without fixing. Naively centralizing logs onto `/shared` would have made that hole *more* discoverable.
+
+**Decision:** split the single `/shared` volume into two, which fixes both at once:
+- **`obs`** (agent-facing): `/obs/logs/app.log`, `/obs/logs/postgres.log`, `/obs/incident_report.json`. Mounted rw in `main`+`postgres` (they write logs), **ro** in `loadgen` (reads the report). The agent reads both logs here — the observability surface is now explicit and held constant.
+- **`grader`** (private): `loadgen.jsonl`, `metrics.jsonl`, `meta.json`, `episode_done.json`. Mounted rw in **`loadgen` only** — NOT in `main`, so the agent's root shell cannot read or forge the grading inputs. The host-side verifier reads them via `docker exec`/`docker cp` into the loadgen container, found by the compose project label derived from `environment.session_id`.
+
+**Why it's robust:** the authoritative grading signals (latency/goodput/error-rate) are **client-measured by the load generator** and live only on `grader`. An agent can edit the app to fake its `/metrics` (the pool-wait gauge), but cannot fake the client-measured latency/goodput without actually serving the load correctly — i.e. actually fixing it. Postgres logs centralize via an entrypoint wrapper (`sh -c "mkdir -p /obs/logs && chmod 0777 /obs/logs && exec docker-entrypoint.sh postgres -c logging_collector=on -c log_directory=/obs/logs ..."`) so the postgres user can write to the shared mount.
+
+**Note:** for Variant A, Postgres is healthy, so its log correctly shows nothing alarming — the agent that checks it and concludes "DB is fine, problem is app-side" is reasoning correctly. The centralized DB log becomes load-bearing for Variant B (the `max_connections` breach, where `FATAL: too many clients` is the key signal).
+
+## D10 (2026-06-08) — Real observability stack (Prometheus/Loki) + MCP query tools
+> Updated by D14: the substrate is now a single Slack-clone Helm chart on the helm backend (kind/k3d per trial); the 7-service Compose obs layout is superseded — the observability/MCP design carries into `substrates/slack-spine/`.
+
+**Decision (after verifying peer benchmarks):** the agent observes via a real telemetry backend queried through a fixed MCP tool catalog — the SREGym model — NOT by catting log files (which nobody does; see [[observability-design-peer-benchmarks]]). Backend is non-negotiable (real aggregator); interface = thin MCP query wrapper.
+
+**Built (`harbor-task/pool-exhaustion/observe/`):** Prometheus (scrapes `main:8000/metrics`, PromQL), Loki + Promtail (Promtail tails the existing `/obs/logs/*.log` files → Loki; the centralized files became the SOURCE, the agent's INTERFACE became LogQL), and an `obs-mcp` FastMCP sidecar exposing `query_metrics(promql)`, `query_logs(logql)`, `list_metrics`, `list_log_labels`. Folded into the task's `environment/docker-compose.yaml` (7 services total) + `[[environment.mcp_servers]]` in task.toml. instruction.md observability surface rewritten to the MCP tools.
+
+**Gating unknown resolved (grounded in harbor-src):** the agent's MCP client runs INSIDE `main` (claude-code writes MCP config and runs via `docker compose exec main`), so the MCP server is a compose SIDECAR reached at `http://obs-mcp:8000/mcp` over compose DNS — transport `streamable-http`, NO host ports. `main` depends_on `obs-mcp` healthy. Multi-container MCP requires the docker provider (not E2B/Daytona/Modal) — relevant for the E2B-phase direction.
+
+**Validated API-free:** brought the full stack up — Prometheus scrapes the SUT (`db_pool_checked_out` queryable, shows saturation under load); Loki aggregates both `app`+`postgres` streams via Promtail; the MCP tool functions work (`query_metrics` returns trending series, `query_logs '{service="app"} |= "pool"'` filters correctly). `oracle` → PASS / (`nop` pending) through Harbor with all 7 services — grading unaffected.
+
+**Still UNVALIDATED (needs a real agent / API call):** the agent actually *using* the MCP tools over the protocol. oracle/nop run scripts and don't call MCP tools, so the agent-investigates-via-MCP path is only exercised by a real claude-code run. Properties preserved: observability is read-only Prometheus/Loki (agent can game app-reported `/metrics` but not the client-measured grading signals on the private grader volume — [[grading-isolation-peer-benchmarks]]).
+
+## D11 (2026-06-08) — First clean end-to-end agent run: PASS through the full stack
+**Result:** `claude-opus-4-8` (real claude-code agent) ran through the Harbor task with the full
+7-service stack and **PASSED all gates** (gate1/gate2/minimality/reward = 1.0). The first
+leak-free agent-capability datapoint (the original spike agent run was contaminated; everything
+changed underneath it since).
+
+**What it did (genuinely good incident response):** investigated **via the MCP observability tools**
+(14 `obs-mcp` tool calls — PromQL + LogQL, not `cat`). Diagnosed from telemetry: cited
+`db_pool_capacity=5`, `db_pool_checked_out` saturated, `db_pool_wait_seconds` p99 ~1.98s pegged at
+the timeout, `app_requests_total{status="pool_timeout"}` rising — and **ruled out Postgres via Loki**
+("postgres logs clean, max_connections=100, so the DB was not the constraint"). Did the Little's-law
+math itself. Fixed (`pool_size=50/max_overflow=30`, confined to `app.db_pool` → minimality PASS),
+verified under load, filed an exact structured report (service=api-app, component=app.db_pool).
+
+**Cost/timing:** $0.80, 602k input / 547k cache / 7.6k output tokens, 7m34s. Declared at t=330.8s
+(5.5 min) — **validates D8/the demo profile**: with the `dev` profile (150s deadline) the loadgen
+would have null-pathed before the agent declared → spurious FAIL. The `demo` profile (690s, dev-scale
+load, added this session) held load through the agent's investigation.
+
+**Minor honest gap:** the LLM mechanism judge did NOT run — `USE_LLM_JUDGE=1` didn't propagate to the
+host-side verifier's env resolution; mechanism was scored by the keyword fallback (0.75, non-gating,
+passed). The PASS is valid regardless (mechanism is non-gating per D6; Gate 2 passes on exact
+service+component match). Follow-up: ~~wire USE_LLM_JUDGE into the verifier env~~ — **superseded by
+D12: the LLM judge was removed instead; the verifier is now fully deterministic.**
+
+## D12 (2026-06-08) — Remove the LLM mechanism judge: the verifier is fully deterministic
+**Decision:** Strip the optional LLM mechanism judge (`oracle/judge.py`, `--llm-judge`, `USE_LLM_JUDGE`) out of the grading path entirely. The oracle/verifier is now a pure deterministic function `evaluate_run(run_dir) → verdict`: **Gate 1** (numeric thresholds over client-measured load/metrics), **Gate 2** (exact service+component match vs a closed registry), and **minimality** (config-key set-diff). Mechanism stays as a **keyword** score — pure string ops, reported, **never gating**.
+
+**Why:** The benchmark's headline is *clean, static, white-box grading* (FP=FN=0.000). Any LLM in the verifier — even non-gating — invites the "your grader is an LLM" critique, is non-reproducible / version-drifts / is promptable, and gets read as part of the score no matter how loudly it's labeled "non-gating." The judge was already non-gating and its own FP/FN was never measured (a deferred obligation), so it bought nothing while carrying that cost. Removing it makes "the verifier is static and gradable" true with no asterisk and makes **every grading run API-free**.
+
+**Behavior-preserving:** the D11 PASS already ran on the keyword path (because `USE_LLM_JUDGE=1` never propagated to the verifier). Regression: re-running `oracle.evaluate` on the D11 run dir after the change yields a **byte-identical verdict** (overall PASS, `gate2.mechanism.method=keyword`, score 0.75).
+
+**Why NOT promote mechanism into the static gate (a closed enum, like service/component):** an enumerated list of root-cause mechanisms would telegraph the answer. Mechanism stays free-text + non-gating for **leak-resistance**; if mechanism-quality analysis is ever wanted it is done out-of-band, never inside `evaluate_run`.
+
+**Changes:** deleted `oracle/judge.py`; dropped `use_llm`/`--llm-judge` from `oracle.evaluate` + `oracle.attribution`; dropped `_use_llm_judge` and the `[verifier.env]` `USE_LLM_JUDGE` from the Harbor verifier + `task.toml`; dropped `--llm-judge` from `harness.episode`; removed `USE_LLM_JUDGE` from `validate.sh`; updated `.env.example`, both READMEs, `CONTRACTS.md`, `CONTRACTS_HARBOR.md`, and `archive/SPIKE.md §5/§9`.
+
+**Supersedes:** the D11 follow-up ("wire `USE_LLM_JUDGE` into the verifier env") — now moot. Closes the archive/SPIKE.md §9 deferred item "mechanism-judge FP/FN measurement."
+
+## D13 (2026-06-08) — Consolidate to a single self-contained Harbor task
+> Superseded by D14: `pool-exhaustion-cyclical` was deleted; the repo is now one `substrates/<name>/` + per-fault generated `tasks/<name>/<id>` (authored from `scenarios/<name>/<id>`), and `validate.sh` targets are now lint/contracts/stamp/render/harbor (observe/adversarial/calibrate retired). D13's single-source-of-truth-per-task lesson carries into the stamped-task model.
+
+**Decision:** Harbor is *the* framework; collapse everything into **one self-contained task** at the repo root, `pool-exhaustion-cyclical/`, and delete the parallel local harness. The triggering complaint: the repo carried two front-ends over one substrate (local `harness/`+`infra/` AND the Harbor task), the substrate (`sut`/`loadgen`/`oracle`) lived apart from the task that used it (forcing `context: ../../..` and a `PYTHONPATH=spike/` trick), and the faulted config was triplicated.
+
+**What moved (git mv, history preserved):** the task left `spike/harbor-task/pool-exhaustion/` for repo-root `pool-exhaustion-cyclical/`; the SUT (`sut/app`→`environment/app`) and load generator (`loadgen`→`environment/loadgen`) moved *inside* `environment/`; the grader (`oracle`→`verifier/oracle`) moved *inside* `verifier/`. Result: build `context: .`, the verifier imports `oracle` from one local dir (`PYTHONPATH=<task>/verifier`), no cross-tree references. `spike/` is gone.
+
+**Single source of truth for the fault:** the faulted config now lives only at `environment/config/app.yaml` — the Dockerfile `COPY`s it and the verifier reads it for `config_before` (previously triplicated across the Dockerfile `printf`, a hardcoded `_FAULTED_APP_CONFIG`, and `sut/config/app.yaml`).
+
+**Local-harness capabilities PORTED first (nothing lost):**
+- **Answer-key lint** → `tools/lint_scenario.py`, retargeted to the agent-visible surface inside `main` (`environment/{app,config,start-main.sh,restart-app.sh}`). `validate.sh lint`.
+- **Adversarial validation** → `solution/variants/{overprovision,ratelimit,timeoutbump,cache}.sh`, each run as the OracleAgent via `harbor run -a oracle` by swapping it into `solution/solve.sh`, asserting `overall=FAIL`. NOTE: Harbor's minimality diffs only `app.yaml` (no compose), so `overprovision` was redefined to violate via an out-of-allowlist key (`db.hold_ms`) rather than the old compose `mem_limit`/`max_connections` edits.
+- **Calibration** → `tools/calibration_analysis.py` (pure band/FP-FN/effect fns, lifted verbatim) + `tools/calibrate_harbor.py` (drives `-a oracle -k N` on a no-declare `calib-golden` variant + `-a nop -k M`, harvests each trial's `verifier/rundir/loadgen.jsonl`, writes `calibration/band.json`). `validate.sh calibrate`.
+
+**Deleted:** `spike/harness/`, `spike/infra/`, the local `CONTRACTS.md`, the `spike/` wrapper; trimmed `pyproject.toml` (`anthropic`/`pydantic` were agent/judge-only). `validate.sh` rewritten (`lint`/`observe`/`harbor`/`adversarial`/`calibrate`; `local` removed). `CONTRACTS_HARBOR.md` → the task's `CONTRACTS.md`.
+
+**Verification gate:** `validate.sh harbor` (oracle→PASS, nop→FAIL) re-proves the end-to-end pipeline after the move — image builds with the new local contexts and the verifier importing its vendored oracle.
 
 ## D14 (2026-06-16) — One clean substrate + per-fault tasks; SRE repair model for code faults
 **Decision:** Restructure the repo from *two parallel Harbor tasks* into **one correct system-under-test (the Slack clone) with faults injected per task**. The SREGym *discipline* (one substrate, many faults authored off it) producing the frontier-swe *runtime shape* (each task fully self-contained). Concretely: a `substrates/<name>/` (clean Slack-clone, deploys healthy by default), `tasks/<name>/<id>/` standard Harbor tasks generated from `scenarios/<name>/<id>`, and a shared `verifier/`. `pool-exhaustion-cyclical/` is **deleted** (redundant — its fault is reproduced by slack-clone 03-F1 on a richer substrate; redundant Compose backend).
@@ -266,126 +391,20 @@ flips `provisional: false` from the same bytes, spending no new trials (#266, #2
 - `hosted_ready` stays a separate promotion gate (a current qualification lock,
   #222); calibration provenance alone must never flip it.
 
-## D13 (2026-06-08) — Consolidate to a single self-contained Harbor task
-> Superseded by D14: `pool-exhaustion-cyclical` was deleted; the repo is now one `substrates/<name>/` + per-fault generated `tasks/<name>/<id>` (authored from `scenarios/<name>/<id>`), and `validate.sh` targets are now lint/contracts/stamp/render/harbor (observe/adversarial/calibrate retired). D13's single-source-of-truth-per-task lesson carries into the stamped-task model.
-
-**Decision:** Harbor is *the* framework; collapse everything into **one self-contained task** at the repo root, `pool-exhaustion-cyclical/`, and delete the parallel local harness. The triggering complaint: the repo carried two front-ends over one substrate (local `harness/`+`infra/` AND the Harbor task), the substrate (`sut`/`loadgen`/`oracle`) lived apart from the task that used it (forcing `context: ../../..` and a `PYTHONPATH=spike/` trick), and the faulted config was triplicated.
-
-**What moved (git mv, history preserved):** the task left `spike/harbor-task/pool-exhaustion/` for repo-root `pool-exhaustion-cyclical/`; the SUT (`sut/app`→`environment/app`) and load generator (`loadgen`→`environment/loadgen`) moved *inside* `environment/`; the grader (`oracle`→`verifier/oracle`) moved *inside* `verifier/`. Result: build `context: .`, the verifier imports `oracle` from one local dir (`PYTHONPATH=<task>/verifier`), no cross-tree references. `spike/` is gone.
-
-**Single source of truth for the fault:** the faulted config now lives only at `environment/config/app.yaml` — the Dockerfile `COPY`s it and the verifier reads it for `config_before` (previously triplicated across the Dockerfile `printf`, a hardcoded `_FAULTED_APP_CONFIG`, and `sut/config/app.yaml`).
-
-**Local-harness capabilities PORTED first (nothing lost):**
-- **Answer-key lint** → `tools/lint_scenario.py`, retargeted to the agent-visible surface inside `main` (`environment/{app,config,start-main.sh,restart-app.sh}`). `validate.sh lint`.
-- **Adversarial validation** → `solution/variants/{overprovision,ratelimit,timeoutbump,cache}.sh`, each run as the OracleAgent via `harbor run -a oracle` by swapping it into `solution/solve.sh`, asserting `overall=FAIL`. NOTE: Harbor's minimality diffs only `app.yaml` (no compose), so `overprovision` was redefined to violate via an out-of-allowlist key (`db.hold_ms`) rather than the old compose `mem_limit`/`max_connections` edits.
-- **Calibration** → `tools/calibration_analysis.py` (pure band/FP-FN/effect fns, lifted verbatim) + `tools/calibrate_harbor.py` (drives `-a oracle -k N` on a no-declare `calib-golden` variant + `-a nop -k M`, harvests each trial's `verifier/rundir/loadgen.jsonl`, writes `calibration/band.json`). `validate.sh calibrate`.
-
-**Deleted:** `spike/harness/`, `spike/infra/`, the local `CONTRACTS.md`, the `spike/` wrapper; trimmed `pyproject.toml` (`anthropic`/`pydantic` were agent/judge-only). `validate.sh` rewritten (`lint`/`observe`/`harbor`/`adversarial`/`calibrate`; `local` removed). `CONTRACTS_HARBOR.md` → the task's `CONTRACTS.md`.
-
-**Verification gate:** `validate.sh harbor` (oracle→PASS, nop→FAIL) re-proves the end-to-end pipeline after the move — image builds with the new local contexts and the verifier importing its vendored oracle.
-
-## D12 (2026-06-08) — Remove the LLM mechanism judge: the verifier is fully deterministic
-**Decision:** Strip the optional LLM mechanism judge (`oracle/judge.py`, `--llm-judge`, `USE_LLM_JUDGE`) out of the grading path entirely. The oracle/verifier is now a pure deterministic function `evaluate_run(run_dir) → verdict`: **Gate 1** (numeric thresholds over client-measured load/metrics), **Gate 2** (exact service+component match vs a closed registry), and **minimality** (config-key set-diff). Mechanism stays as a **keyword** score — pure string ops, reported, **never gating**.
-
-**Why:** The benchmark's headline is *clean, static, white-box grading* (FP=FN=0.000). Any LLM in the verifier — even non-gating — invites the "your grader is an LLM" critique, is non-reproducible / version-drifts / is promptable, and gets read as part of the score no matter how loudly it's labeled "non-gating." The judge was already non-gating and its own FP/FN was never measured (a deferred obligation), so it bought nothing while carrying that cost. Removing it makes "the verifier is static and gradable" true with no asterisk and makes **every grading run API-free**.
-
-**Behavior-preserving:** the D11 PASS already ran on the keyword path (because `USE_LLM_JUDGE=1` never propagated to the verifier). Regression: re-running `oracle.evaluate` on the D11 run dir after the change yields a **byte-identical verdict** (overall PASS, `gate2.mechanism.method=keyword`, score 0.75).
-
-**Why NOT promote mechanism into the static gate (a closed enum, like service/component):** an enumerated list of root-cause mechanisms would telegraph the answer. Mechanism stays free-text + non-gating for **leak-resistance**; if mechanism-quality analysis is ever wanted it is done out-of-band, never inside `evaluate_run`.
-
-**Changes:** deleted `oracle/judge.py`; dropped `use_llm`/`--llm-judge` from `oracle.evaluate` + `oracle.attribution`; dropped `_use_llm_judge` and the `[verifier.env]` `USE_LLM_JUDGE` from the Harbor verifier + `task.toml`; dropped `--llm-judge` from `harness.episode`; removed `USE_LLM_JUDGE` from `validate.sh`; updated `.env.example`, both READMEs, `CONTRACTS.md`, `CONTRACTS_HARBOR.md`, and `archive/SPIKE.md §5/§9`.
-
-**Supersedes:** the D11 follow-up ("wire `USE_LLM_JUDGE` into the verifier env") — now moot. Closes the archive/SPIKE.md §9 deferred item "mechanism-judge FP/FN measurement."
-
-## D11 (2026-06-08) — First clean end-to-end agent run: PASS through the full stack
-**Result:** `claude-opus-4-8` (real claude-code agent) ran through the Harbor task with the full
-7-service stack and **PASSED all gates** (gate1/gate2/minimality/reward = 1.0). The first
-leak-free agent-capability datapoint (the original spike agent run was contaminated; everything
-changed underneath it since).
-
-**What it did (genuinely good incident response):** investigated **via the MCP observability tools**
-(14 `obs-mcp` tool calls — PromQL + LogQL, not `cat`). Diagnosed from telemetry: cited
-`db_pool_capacity=5`, `db_pool_checked_out` saturated, `db_pool_wait_seconds` p99 ~1.98s pegged at
-the timeout, `app_requests_total{status="pool_timeout"}` rising — and **ruled out Postgres via Loki**
-("postgres logs clean, max_connections=100, so the DB was not the constraint"). Did the Little's-law
-math itself. Fixed (`pool_size=50/max_overflow=30`, confined to `app.db_pool` → minimality PASS),
-verified under load, filed an exact structured report (service=api-app, component=app.db_pool).
-
-**Cost/timing:** $0.80, 602k input / 547k cache / 7.6k output tokens, 7m34s. Declared at t=330.8s
-(5.5 min) — **validates D8/the demo profile**: with the `dev` profile (150s deadline) the loadgen
-would have null-pathed before the agent declared → spurious FAIL. The `demo` profile (690s, dev-scale
-load, added this session) held load through the agent's investigation.
-
-**Minor honest gap:** the LLM mechanism judge did NOT run — `USE_LLM_JUDGE=1` didn't propagate to the
-host-side verifier's env resolution; mechanism was scored by the keyword fallback (0.75, non-gating,
-passed). The PASS is valid regardless (mechanism is non-gating per D6; Gate 2 passes on exact
-service+component match). Follow-up: ~~wire USE_LLM_JUDGE into the verifier env~~ — **superseded by
-D12: the LLM judge was removed instead; the verifier is now fully deterministic.**
-
-## D10 (2026-06-08) — Real observability stack (Prometheus/Loki) + MCP query tools
-> Updated by D14: the substrate is now a single Slack-clone Helm chart on the helm backend (kind/k3d per trial); the 7-service Compose obs layout is superseded — the observability/MCP design carries into `substrates/slack-spine/`.
-
-**Decision (after verifying peer benchmarks):** the agent observes via a real telemetry backend queried through a fixed MCP tool catalog — the SREGym model — NOT by catting log files (which nobody does; see [[observability-design-peer-benchmarks]]). Backend is non-negotiable (real aggregator); interface = thin MCP query wrapper.
-
-**Built (`harbor-task/pool-exhaustion/observe/`):** Prometheus (scrapes `main:8000/metrics`, PromQL), Loki + Promtail (Promtail tails the existing `/obs/logs/*.log` files → Loki; the centralized files became the SOURCE, the agent's INTERFACE became LogQL), and an `obs-mcp` FastMCP sidecar exposing `query_metrics(promql)`, `query_logs(logql)`, `list_metrics`, `list_log_labels`. Folded into the task's `environment/docker-compose.yaml` (7 services total) + `[[environment.mcp_servers]]` in task.toml. instruction.md observability surface rewritten to the MCP tools.
-
-**Gating unknown resolved (grounded in harbor-src):** the agent's MCP client runs INSIDE `main` (claude-code writes MCP config and runs via `docker compose exec main`), so the MCP server is a compose SIDECAR reached at `http://obs-mcp:8000/mcp` over compose DNS — transport `streamable-http`, NO host ports. `main` depends_on `obs-mcp` healthy. Multi-container MCP requires the docker provider (not E2B/Daytona/Modal) — relevant for the E2B-phase direction.
-
-**Validated API-free:** brought the full stack up — Prometheus scrapes the SUT (`db_pool_checked_out` queryable, shows saturation under load); Loki aggregates both `app`+`postgres` streams via Promtail; the MCP tool functions work (`query_metrics` returns trending series, `query_logs '{service="app"} |= "pool"'` filters correctly). `oracle` → PASS / (`nop` pending) through Harbor with all 7 services — grading unaffected.
-
-**Still UNVALIDATED (needs a real agent / API call):** the agent actually *using* the MCP tools over the protocol. oracle/nop run scripts and don't call MCP tools, so the agent-investigates-via-MCP path is only exercised by a real claude-code run. Properties preserved: observability is read-only Prometheus/Loki (agent can game app-reported `/metrics` but not the client-measured grading signals on the private grader volume — [[grading-isolation-peer-benchmarks]]).
-
-## D9 (2026-06-07) — Centralized logging + tamper-resistant grader split (Harbor task)
-> Updated by D14: the substrate is now a single Slack-clone Helm chart on the helm backend (kind/k3d per trial); the Compose shared-volume `obs`/`grader` split is superseded — the grader-isolation design carries into `substrates/slack-spine/`.
-
-**Trigger:** Andre asked why the agent (shelled into `main`) couldn't see the Postgres logs. Root cause: Postgres logged to its own container; `/shared` was only mounted in `main`+`loadgen`. Surfaced a second, worse issue: `/shared` (rw in `main`, where the agent has a ROOT shell) also held the grader's own inputs (`loadgen.jsonl`, `metrics.jsonl`, `episode_done.json`) — an adversarial agent could `ls /shared`, write a fake `episode_done.json` + fake-healthy `loadgen.jsonl`, and score PASS without fixing. Naively centralizing logs onto `/shared` would have made that hole *more* discoverable.
-
-**Decision:** split the single `/shared` volume into two, which fixes both at once:
-- **`obs`** (agent-facing): `/obs/logs/app.log`, `/obs/logs/postgres.log`, `/obs/incident_report.json`. Mounted rw in `main`+`postgres` (they write logs), **ro** in `loadgen` (reads the report). The agent reads both logs here — the observability surface is now explicit and held constant.
-- **`grader`** (private): `loadgen.jsonl`, `metrics.jsonl`, `meta.json`, `episode_done.json`. Mounted rw in **`loadgen` only** — NOT in `main`, so the agent's root shell cannot read or forge the grading inputs. The host-side verifier reads them via `docker exec`/`docker cp` into the loadgen container, found by the compose project label derived from `environment.session_id`.
-
-**Why it's robust:** the authoritative grading signals (latency/goodput/error-rate) are **client-measured by the load generator** and live only on `grader`. An agent can edit the app to fake its `/metrics` (the pool-wait gauge), but cannot fake the client-measured latency/goodput without actually serving the load correctly — i.e. actually fixing it. Postgres logs centralize via an entrypoint wrapper (`sh -c "mkdir -p /obs/logs && chmod 0777 /obs/logs && exec docker-entrypoint.sh postgres -c logging_collector=on -c log_directory=/obs/logs ..."`) so the postgres user can write to the shared mount.
-
-**Note:** for Variant A, Postgres is healthy, so its log correctly shows nothing alarming — the agent that checks it and concludes "DB is fine, problem is app-side" is reasoning correctly. The centralized DB log becomes load-bearing for Variant B (the `max_connections` breach, where `FATAL: too many clients` is the key signal).
-
-## D8 (2026-06-07) — Harbor port works; the scenario maps cleanly onto Harbor
-> Updated by D14: the substrate is now a single Slack-clone Helm chart on the helm backend (kind/k3d per trial); the docker-provider `main`+sibling-containers+shared-volumes mapping is superseded — the oracle/observability/grader-isolation design carries into `substrates/slack-spine/`.
-
-**Decision:** Ported the validated spike into a real Harbor task (`spike/harbor-task/pool-exhaustion/`) and proved it end-to-end: golden (`-a oracle`) → **PASS** (gate1/gate2/minimality/reward all 1.0) through Harbor's own pipeline + our custom verifier. The "live multi-container + background-load + custom-Python-oracle" shape — unusual for Harbor — fits without forcing it into a test.sh.
-
-**The mapping (verified against Harbor source, runs locally via the installed `harbor` CLI):**
-- SUT app runs in Harbor's hardcoded `main` service (where the agent's `environment.exec()` lands); `postgres` + a `loadgen` sidecar are siblings; shared named volume `/shared`.
-- Agent "declares" by writing `/shared/incident_report.json`; the loadgen sidecar watches for it, runs the soak, writes `episode_done.json`.
-- Grading = a host-side custom `BaseVerifier` that polls `episode_done.json`, downloads `/shared` + `/config/app.yaml` from the live env, assembles a spike run-dir, and calls the **existing** `oracle.evaluate.evaluate_run` (zero oracle logic duplicated). Returns `VerifierResult(rewards=...)`.
-- Golden = `solution/solve.sh` run by Harbor's OracleAgent; null = Harbor's NopAgent.
-
-**Gotchas learned (save the next person hours):**
-1. `Task.is_valid_dir()` requires `tests/test.sh` to EXIST even when using a custom verifier — else Harbor silently treats the dir as an empty dataset ("Either datasets or tasks must be provided"). Ship a no-op `tests/test.sh` stub; `VerifierFactory` picks `import_path` ahead of it.
-2. **`import_path` is a JOB/TRIAL-level field, NOT a task.toml `[verifier]` field.** task.toml `[verifier]` only has network/timeout/env/environment_mode. Pass the verifier via CLI `--verifier-import-path module:Class` (task-dir name has a hyphen → top-level import, no dotted path), with PYTHONPATH = task `verifier/` + `spike/`.
-3. `harbor run` prompts to confirm host-env access when `[verifier.env]` references host vars → pass `--yes` for unattended runs.
-4. Custom verifiers must RETURN `VerifierResult`, never write reward.txt (that's the built-in verifier's path).
-
-**Open (port-specific, not blocking):** (a) loadgen sidecar runs on its own clock — for a *real* long-running agent the schedule must hold load until declare rather than racing `declare_deadline_s` (fine for oracle/nop; fix before a real-agent Harbor run). (b) network isolation of loadgen from `main` is convention-level here (no docker socket in `main`); kernel-level is the E2B/k8s hardening.
-
-**Closed on PR #6 review:** golden `solve.sh` can still repair and declare during warmup, but the loadgen now records the early `declare_ts_s` separately from `soak_start_s` and floors the graded soak at `warmup_s`. That removes the cold-pool false failure Andre observed without inserting artificial sleeps into the golden scripts.
-
-## D7 (2026-06-07) — Answer-key lint is a validation gate (incident-driven)
-**Incident:** the spike's first agent episode was contaminated — `sut/config/app.yaml` shipped with `# FAULTED. golden fix: 16` comments (plus "fault site" / oracle-design narration in `db.py`, `main.py`, `compose.yaml`) copied verbatim from the build contract into agent-visible artifacts. The agent under test read them on turn 2: detection was authentic (it cited real telemetry), but localization and fix values were open-book. The harness exit criteria are unaffected; the agent-capability datapoint is invalidated.
-
-**Decision:** every scenario must pass an **answer-key lint** before any episode runs: scan all agent-visible artifacts for fault markers, golden values, oracle/anti-cheat references, and benchmark framing (`spike/harness/lint_scenario.py`, wired into `run_episode` — fails loudly). This extends D2's gate-3: "no reachable known-good reference" now includes *no in-band annotations*. Degenerate-fix emulation knobs renamed to production-plausible names (`MAX_INFLIGHT_REQUESTS`, `RESPONSE_CACHE_ENABLED`).
-
-**Current enforcement:** the answer-key lint now runs through `./validate.sh lint` and is included in `./validate.sh smoke` and CI. Direct task runs, calibration, and hosted trials do not invoke it automatically; callers must run the validation gate first.
-
-**Lesson for the benchmark:** spec-to-artifact contamination is a leak channel nobody red-teamed — scenario-authoring tooling itself must be treated as part of the threat model. For the library phase: generate scenario artifacts and grading manifests from separate sources, and lint at gate-validation time.
-
-## D6 (2026-06-06) — Oracle v0.2: cross-linked dual-gate, report-as-action, frozen soak
-**Decision:** Concretizes D3 after a 3-reviewer red-team (24 findings, 14 high). The dictated attribution rubric — (1) outcome metrics recover, (2) the agent's reasoning demonstrably fingered the pool — is implemented as:
-1. **Outcome gate = server-side conjunction:** P99-vs-load in golden band through dwell+soak ∧ bounded error rate ∧ **goodput ≥ (1−tol)×offered RPS** (replaces the generator-liveness invariant, which a server-side throttle/cache defeats) ∧ pool-saturation signal ≈ 0 at peak (so "slow but completing" still fails).
-2. **Attribution gate = the structured report**, submitted via an explicit `submit_incident_report(service, component, mechanism, evidence_refs)` tool (agent-neutral; schema forbids enumerations). service+component = exact match vs a **closed component registry published to the agent**; mechanism = LLM-judge **partial credit only** until judge FP/FN is measured.
-3. **Cross-link (the load-bearing fix):** a minimality/blast-radius predicate over the config diff is wired INTO the gate — mutated keys must be confined to the attributed component. Without it, the red-team showed shotgun-overprovision + reverse-engineered attribution passes both gates and D3's anti-overprovisioning claim is false.
-4. **Trajectory/reasoning-chain inspection is a reported research metric, never a gate** — gating on it violates "grade outcome, not procedure," is non-comparable across harnesses (trace-verbosity artifact), and rewards hypothesis spam. ⚠️ *This modulates Andre's dictated intent (reasoning-chain inspection as the key signal) — flagged for veto; the report gate captures the same fact agent-neutrally.*
-5. **Episode termination:** agent declares resolved → frozen (zero token spend) → soak (1 full load cycle) → verdict computed once, never pollable. Telemetry stays visible (the SRE view); the oracle verdict and baseline curve do not. Time-to-declaration reported as tie-break.
-6. **Scoring map:** the report *instantiates* Detection(filed)/Localization(fields)/Diagnosis(mechanism); Remediation = outcome gate only; headline = conjunction — kills the D3 double-counting risk. **Detection dropped as a scored stage in v1** (degenerate without no-fault controls; controls deferred to v2 as a detection-ROC contribution) — resolves Q5.
+## D25 (2026-10-07) — Reconstruction: Incident Arena output is the reference
+**Decision:** The original repository went offline; its last generated output (the
+20 Incident Arena tasks, `abundant-ai/incident-arena@fba011e`) is the reference this
+fork must reproduce. `./validate.sh arena` (tools/arena_parity.py) checks every
+regenerated Arena task byte-for-byte, with each tolerated difference listed and
+justified in `ALLOWED_DIFFERENCES`. The v2 verifier lives at `verifier/` (the
+recovered `closure.py` names that root) and ships as `tests/verifier/`; completion is
+the declaration (`declare_repair_complete`), the report is advisory; load profiles of
+window-anchored tasks are derived from `task.metadata.agent_window_s`/`soak_s`.
+**Why:** with the source history gone after 2026-09-19, generated outputs and the
+published images are the only primary evidence; a byte-level gate turns
+"reconstructed" into a checkable claim instead of a judgment call.
+**Obligations:** keep the gate green; record unrecoverable pieces in
+`docs/plans/tech-debt.md`; see `docs/plans/2026-10-07-arena-parity.md`.
 
 ---
 

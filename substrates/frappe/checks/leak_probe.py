@@ -26,7 +26,7 @@ import yaml
 
 SUB = pathlib.Path(__file__).resolve().parents[1]  # substrates/frappe
 REPO = SUB.parents[1]
-SCENARIO = REPO / "tasks" / SUB.name / "03-F1-connection-cap"
+SCENARIO = REPO / "tasks" / SUB.name / "07-desk-and-queue-outage"  # 03-F1 was retired
 CHART = SCENARIO / "environment" / "chart"
 OVERLAY = SCENARIO / "environment" / "task.values.yaml"
 

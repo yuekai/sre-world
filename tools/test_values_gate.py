@@ -54,15 +54,15 @@ def test_the_scanner_reads_subchart_templates() -> None:
     assert str(subchart) in corpus
     assert "replicaCount" in corpus[str(subchart)]
 
-    # ...and end to end: the scenario that sets it is clean.
-    assert _resolve("frappe/03-F1-connection-cap").inert == ()
+    # ...and end to end: the scenario that sets it (socketio.replicaCount) is clean.
+    assert _resolve("frappe/07-desk-and-queue-outage").inert == ()
 
 
 def test_the_scanner_reads_packaged_tgz_dependency_charts() -> None:
     """DEFECT 2: one level below the subchart bug.
 
-    frappe's `mariadb-subchart.primary.extraFlags` (03-U1-user-conn-cap, and 13
-    other scenarios) is rendered ONLY inside chart/charts/erpnext/charts/
+    frappe's `mariadb-subchart.primary.extraFlags` (07-desk-and-queue-outage, and
+    every other 07-* scenario) is rendered ONLY inside chart/charts/erpnext/charts/
     mariadb-11.5.7.tgz — a gzipped tarball that no text glob, however recursive,
     can read. Unpacked-subchart support is not enough.
     """
@@ -81,7 +81,7 @@ def test_the_scanner_reads_packaged_tgz_dependency_charts() -> None:
         m.endswith("mariadb/templates/primary/statefulset.yaml") for m in members
     ), "extraFlags is rendered by the packaged mariadb statefulset"
 
-    assert _resolve("frappe/03-U1-user-conn-cap").inert == ()
+    assert _resolve("frappe/07-desk-and-queue-outage").inert == ()
 
 
 def test_the_scanner_reads_generator_side_chart_overrides() -> None:
@@ -175,8 +175,8 @@ def test_a_scenario_setting_a_rendered_key_passes() -> None:
     corpus mechanisms above."""
     assert values_gate.check(_values()) == []
     for scenario in (
-        "frappe/03-F1-connection-cap",  # subchart replicaCount
-        "frappe/03-U1-user-conn-cap",  # packaged-tgz extraFlags
+        "frappe/07-desk-and-queue-outage",  # subchart replicaCount + packaged-tgz extraFlags
+        "frappe/07-writes-and-queue-oom",  # packaged-tgz extraFlags
         "slack-spine/06-F4-maintenance-collision",  # generator-side overrides
     ):
         assert [
@@ -232,23 +232,21 @@ def test_the_remaining_live_trap_is_declared_validated_and_rendered_by_nothing()
     nothing, so a scenario authored on it would pass generation and deploy
     healthy. The gate must stay armed BEFORE the first one is written.
 
-    slack-spine's faultInit.roleGuc used to be the second such trap: fully
-    validated by that substrate's fault_validators and rendered by nothing. It is
-    now RENDERED (tier06.yaml emits `ALTER ROLE <role> SET <name> = '<value>'`
-    into the bootstrap SQL when faultInit.roleGuc.enabled), so it is no longer a
-    trap and this test asserts the closed state instead — validated AND rendered.
-    The arming machinery itself is unchanged and still covered by
-    test_a_faultinit_key_no_template_renders_fails_with_the_distinct_message.
+    slack-spine's faultInit.roleGuc was briefly rendered by tier06.yaml; the
+    chart has since dropped both its renderer and its faultInit.roleGuc values
+    block, so slack-spine renders only the `db` family. A scenario setting
+    faultInit.roleGuc is therefore a phantom fault, which the gate catches (see
+    test_a_faultinit_key_no_template_renders_fails_with_the_distinct_message).
     """
     slack_rendered = values_gate._rendered_fault_families(
         "slack-spine", substrate_mod.load("slack-spine").chart_dir
     )
-    assert slack_rendered == frozenset({"db", "roleGuc"})
-    validators = (
-        REPO_ROOT / "substrates/slack-spine/checks/fault_validators.py"
-    ).read_text()
-    assert "roleGuc" in validators  # validated...
-    assert "roleGuc" in slack_rendered  # ...and now rendered too: trap closed
+    assert slack_rendered == frozenset({"db"})
+    slack_values = yaml.safe_load(
+        (REPO_ROOT / "substrates/slack-spine/chart/values.yaml").read_text()
+    )
+    assert "roleGuc" not in slack_values["faultInit"]  # not declared...
+    assert "roleGuc" not in slack_rendered  # ...and not rendered
 
     frappe_rendered = values_gate._rendered_fault_families(
         "frappe", substrate_mod.load("frappe").chart_dir

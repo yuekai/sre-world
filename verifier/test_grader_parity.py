@@ -24,10 +24,24 @@ from oracle.evaluate import evaluate_run  # noqa: E402
 _JOBS = _REPO / "jobs"
 
 
+def _is_v1_rundir(rundir: Path) -> bool:
+    """v1 oracle harvests carry a verdict.json without schema_version; v2 verifier
+    trials (e.g. QUICKSTART §7b oracle runs under jobs/) stamp schema_version 2
+    and are graded by verifier/evaluate.py, not oracle.evaluate."""
+    verdict = rundir / "verdict.json"
+    if not verdict.exists():
+        return False
+    return json.loads(verdict.read_text()).get("schema_version", 1) == 1
+
+
 def _rundirs() -> list[Path]:
     if not _JOBS.exists():
         return []
-    return sorted(p.parent for p in _JOBS.rglob("rundir/loadgen.jsonl"))
+    return sorted(
+        p.parent
+        for p in _JOBS.rglob("rundir/loadgen.jsonl")
+        if _is_v1_rundir(p.parent)
+    )
 
 
 def _ground_truth_for(rundir: Path) -> Path:
@@ -53,7 +67,7 @@ def _ground_truth_for(rundir: Path) -> Path:
 _RUNDIRS = _rundirs()
 
 
-@pytest.mark.skipif(not _RUNDIRS, reason="no captured rundirs under jobs/")
+@pytest.mark.skipif(not _RUNDIRS, reason="no captured v1 rundirs under jobs/")
 @pytest.mark.parametrize("rundir", _RUNDIRS, ids=lambda p: p.parent.parent.name)
 def test_evaluate_run_matches_committed_verdict(rundir: Path) -> None:
     """The current oracle (post-refactor, with the dormant F7 block) reproduces
@@ -69,7 +83,7 @@ def test_evaluate_run_matches_committed_verdict(rundir: Path) -> None:
     assert assemble.verdict_to_rewards(fresh) == assemble.verdict_to_rewards(committed)
 
 
-@pytest.mark.skipif(not _RUNDIRS, reason="no captured rundirs under jobs/")
+@pytest.mark.skipif(not _RUNDIRS, reason="no captured v1 rundirs under jobs/")
 @pytest.mark.parametrize("rundir", _RUNDIRS, ids=lambda p: p.parent.parent.name)
 def test_build_config_after_reproduces_captured(rundir: Path) -> None:
     """assemble.build_config_after (used by BOTH the host verifier and the in-pod

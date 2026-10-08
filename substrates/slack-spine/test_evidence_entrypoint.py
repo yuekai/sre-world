@@ -10,13 +10,13 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parent
-    / "chart/files/verifier-v2-evidence-entrypoint.py"
+    / "chart/files/verifier-evidence-entrypoint.py"
 )
 
 
 @pytest.fixture
 def entrypoint():
-    spec = importlib.util.spec_from_file_location("verifier_v2_evidence_entrypoint", SCRIPT)
+    spec = importlib.util.spec_from_file_location("verifier_evidence_entrypoint", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -39,6 +39,17 @@ def _sidecar(grader: Path, calls: list[str]) -> SimpleNamespace:
     async def sleep_forever() -> None:
         calls.append("sleep")
 
+    # Pinned loadgen images predate protected runtime-state phase capture; the
+    # entrypoint backports it by wrapping these two hooks before main runs.
+    def make_agent_boundary_hook(_lg: object, _state: dict):
+        async def boundary(_reason: str) -> None:
+            calls.append("boundary")
+
+        return boundary
+
+    async def snapshot_soak_end(_lg: object) -> None:
+        calls.append("soak_end")
+
     return SimpleNamespace(
         GRADER=grader,
         EPISODE_DONE_JSON=done,
@@ -48,6 +59,8 @@ def _sidecar(grader: Path, calls: list[str]) -> SimpleNamespace:
         _sleep_forever=sleep_forever,
         _write_episode_done=write_done,
         main=run_episode,
+        make_agent_boundary_hook=make_agent_boundary_hook,
+        _snapshot_soak_end=snapshot_soak_end,
     )
 
 
@@ -57,9 +70,13 @@ def test_first_start_claims_episode_once(
     calls: list[str] = []
     sidecar = _sidecar(tmp_path, calls)
     monkeypatch.setitem(__import__("sys").modules, "loadgen_sidecar", sidecar)
+    original_boundary = sidecar.make_agent_boundary_hook
+    original_soak_end = sidecar._snapshot_soak_end
     entrypoint.main()
     assert calls == ["episode"]
     assert (tmp_path / ".episode-started.json").is_file()
+    assert sidecar.make_agent_boundary_hook is not original_boundary
+    assert sidecar._snapshot_soak_end is not original_soak_end
 
 
 def test_finalized_episode_is_served_without_rerun(

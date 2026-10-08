@@ -2,7 +2,7 @@
 
 Substrate-agnostic pieces of the loadgen sidecar: path constants, envelope
 normalisation, the fixed-allowlist tar bundle, and the aiohttp routes for
-``POST /declare`` + ``POST /grader/finalize-undeclared`` + ``GET /healthz`` +
+``POST /grader/episode-start`` + ``POST /report`` + ``POST /declare_repair_complete`` + ``GET /healthz`` +
 ``GET /grader/{episode_done,bundle}``.
 Every substrate's sidecar (``substrates/slack-spine/loadgen_sidecar.py``,
 ``substrates/frappe/loadgen_sidecar.py``) imports from here. Home:
@@ -15,7 +15,8 @@ What stays substrate-specific in each sidecar:
   * ``parse_metrics`` — substrate-specific Prometheus gauge names.
   * DB-state probes — Postgres vs MariaDB SQL.
 
-Why factor at *this* seam: the HTTP contract (`/declare`, `/healthz`, `/grader/*`)
+Why factor at *this* seam: the HTTP contract (`/report`, `/declare_repair_complete`,
+`/healthz`, `/grader/*`)
 is what ``tests/test.sh`` grades against. Keeping it in one place guarantees both
 sidecars serve byte-identical routes. The declare-time config snapshot is
 substrate-specific because the SUT's admin API endpoints differ.
@@ -27,6 +28,7 @@ import asyncio
 import hmac
 import io
 import json
+import logging
 import os
 import tarfile
 from pathlib import Path
@@ -55,7 +57,6 @@ CONFIG_AT_SOAK_END_JSON = GRADER / "config_at_soak_end.json"
 CONFIG_AT_SUBMISSION_JSON = GRADER / "config_at_submission.json"
 CONFIG_AFTER_FREEZE_JSON = GRADER / "config_after_freeze.json"
 AGENT_BOUNDARY_JSON = GRADER / "agent-boundary.json"
-UNDECLARED_FINALIZATION_JSON = GRADER / "undeclared-finalization.json"
 POD_STATE_JSON = GRADER / "pod_state.json"
 
 # GET /grader/bundle allowlist: FIXED file/dir names under /grader (no
@@ -79,7 +80,6 @@ BUNDLE_FILES = (
     "config_at_submission.json",
     "config_after_freeze.json",
     "agent-boundary.json",
-    "undeclared-finalization.json",
     "episode_done.json",
     "source_manifest.json",
     "attestation_baseline.json",
@@ -122,29 +122,27 @@ def load_grader_access_token() -> str:
 # Envelope normalisation + validation.
 # --------------------------------------------------------------------------- #
 def _normalize_findings(body: Any) -> Any:
-    """Normalize a declared body into the multi-finding wire shape.
+    """Normalize a reported body into the multi-finding wire shape.
 
-    The report.json contract (producer GEN + consumer ORACLE agree EXACTLY) is::
+    The report.json contract is::
 
         {"findings": [ {"service": str, "component": str, "mechanism": str}, ... ]}
 
     The agent's ``submit_incident_report`` already POSTs this envelope, but this
     function is the WRITE-BOUNDARY guarantee so the on-disk shape is correct for
-    ANY non-null declare body (a future client, or a legacy single-object body
-    POSTed directly to ``/declare`` bypassing the wrapper):
+    ANY non-null report body (a future client, or a legacy single-object body
+    POSTed directly to ``/report`` bypassing the wrapper):
 
-      * ``None`` (null / nop path) -> ``None`` (oracle normalizes to findings=[];
-        Gate 2 then fails — the nop-fails behavior is PRESERVED).
+      * ``None`` (no report filed) -> ``None``.
       * already a ``{"findings": [...]}`` envelope -> passed through verbatim.
       * a single finding object ``{"service","component","mechanism"}`` -> wrapped
         into a one-element ``findings`` list (back-compat for 03-F1/06-F2a/06-F2b).
       * anything else (a non-dict, or a dict that is neither) -> passed through
-        verbatim; the oracle is the authority on schema and will reject it at
-        Gate 2. We do NOT fabricate findings.
+        verbatim. We do NOT fabricate findings.
 
-    FAIL LOUDLY is satisfied downstream: a malformed declare is recorded on disk
-    as-posted and the oracle's set-based attribution fails it loudly (no silent
-    coercion into a passing shape).
+    Nothing here decides reward: the report is advisory telemetry, and the
+    verifier refuses any contract that grades it. Recording it as-posted keeps a
+    reader's view of what the agent believed honest.
     """
     if body is None:
         return None
@@ -157,22 +155,22 @@ def _normalize_findings(body: Any) -> Any:
     return body  # unknown shape: persist as-posted; oracle is the schema authority
 
 
-def _validate_declare_body(body: Any) -> None:
+def _validate_report_body(body: Any) -> None:
     """Reject bodies that cannot become a non-empty incident report.
 
-    Direct `/declare` probes with `{}` or `{"findings":[]}` used to freeze the
-    first-shot declaration as an empty report. The oracle would fail correctly,
-    but the failure mode measured endpoint probing more than repair quality. Keep
-    fail-loud semantics by returning HTTP 400 before mutating report.json.
+    Filing a report no longer buys anything, so this is not a reward boundary; it
+    is a usability one. A ``{}`` or ``{"findings":[]}`` POST is almost always a
+    client bug, and answering 400 tells the agent that immediately instead of
+    silently persisting an empty narrative it thinks it filed.
     """
     normalized = _normalize_findings(body)
     if normalized is None:
-        raise ValueError("declare body must be a non-null incident report")
+        raise ValueError("report body must be a non-null incident report")
     if not isinstance(normalized, dict) or "findings" not in normalized:
-        raise ValueError("declare body must be a finding or {'findings': [...]} envelope")
+        raise ValueError("report body must be a finding or {'findings': [...]} envelope")
     findings = normalized["findings"]
     if not isinstance(findings, list) or not findings:
-        raise ValueError("declare body must contain at least one finding")
+        raise ValueError("report body must contain at least one finding")
     for i, finding in enumerate(findings):
         if not isinstance(finding, dict):
             raise ValueError(f"findings[{i}] must be an object")
@@ -184,9 +182,9 @@ def _validate_declare_body(body: Any) -> None:
 def _write_report(body: Any) -> None:
     """Atomically write /grader/report.json (write-temp-then-rename).
 
-    Normalizes the declared body into the ``{"findings":[...]}`` envelope first so
-    the on-disk shape always matches the report.json contract (see
-    ``_normalize_findings``). ``None`` (the nop/null path) is written as literal
+    Normalizes the body into the ``{"findings":[...]}`` envelope first so the
+    on-disk shape always matches the report.json contract (see
+    ``_normalize_findings``). ``None`` (no report filed) is written as literal
     ``null`` unchanged.
     """
     normalized = _normalize_findings(body)
@@ -218,6 +216,38 @@ def _build_bundle_bytes() -> bytes:
 # Type alias for readability: the substrate-specific declare handler contract.
 HandleDeclareFn = Callable[[Any, Any, dict[str, Any]], Awaitable[Any]]
 
+REPORT_PATH = "/report"
+DECLARE_PATH = "/declare_repair_complete"
+
+# Optional per-substrate check on report CONTENT (saleor validates findings
+# against its closed attribution inventory). It returns an error payload to
+# answer 400 with, or None to accept. It shapes only report.json, which no gate
+# reads, so it cannot change a score.
+ValidateReportFn = Callable[[Any], "dict[str, Any] | None"]
+
+
+def _agent_window_s(lg: Any) -> float:
+    from loadgen.runner import agent_window_s
+
+    return agent_window_s(lg.profile)
+
+
+async def pin_episode_t0(lg: Any) -> float:
+    """Pin the episode clock and return t0, the ONE origin everything measures from.
+
+    This blocks until Harbor's environment healthcheck makes the authenticated
+    ``POST /grader/episode-start`` transition as its final ``&&`` leg, after
+    every readiness predicate succeeds. Environment creation, Helm install, and
+    readiness convergence are outside the clock; Harbor agent setup is inside
+    it. The same transition runs for normal agents and NopAgent, and it FAILS
+    LOUDLY rather than permitting Harbor to start an unmeasured episode.
+    """
+    await lg.prepare_bringup()
+    await lg.await_episode_start()
+    if lg._t0 is None:
+        raise RuntimeError("episode clock was not pinned")
+    return float(lg._t0)
+
 
 async def request_agent_freeze(token: str) -> dict[str, Any]:
     """Request the authenticated uid-10001 terminal boundary and validate it."""
@@ -241,55 +271,11 @@ async def request_agent_freeze(token: str) -> dict[str, Any]:
     return payload
 
 
-def write_undeclared_finalization_receipt(
-    state: dict[str, Any], *, completion_s: float
-) -> None:
-    """Atomically finalize the verifier-owned undeclared lifecycle receipt."""
-    receipt = state.get("undeclared_finalization")
-    if not isinstance(receipt, dict):
-        raise RuntimeError(
-            "undeclared finalization won but its validated freezer receipt is missing"
-        )
-    finalized = {**receipt, "completed_s": round(completion_s, 6)}
-    required = {
-        "schema_version",
-        "reason",
-        "requested_s",
-        "completed_s",
-        "undeclared_evidence_min_s",
-        "agent_freezer_receipt",
-    }
-    missing = sorted(required - finalized.keys())
-    if missing:
-        raise RuntimeError(
-            f"undeclared finalization receipt is missing required fields: {missing}"
-        )
-    if finalized["schema_version"] != 1 or finalized["reason"] != (
-        "verifier_started_without_declaration"
-    ):
-        raise RuntimeError(
-            f"undeclared finalization receipt has invalid schema/reason: {finalized!r}"
-        )
-    if finalized["completed_s"] < finalized["requested_s"]:
-        raise RuntimeError(
-            "undeclared finalization completion precedes its request: "
-            f"{finalized!r}"
-        )
-    freezer = finalized["agent_freezer_receipt"]
-    if (
-        not isinstance(freezer, dict)
-        or freezer.get("success") is not True
-        or freezer.get("remaining_pids") != []
-    ):
-        raise RuntimeError(
-            f"undeclared finalization has an invalid agent-freezer receipt: {freezer!r}"
-        )
-    tmp = UNDECLARED_FINALIZATION_JSON.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(finalized, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(UNDECLARED_FINALIZATION_JSON)
-
-
-def build_grader_app(state: dict[str, Any], handle_declare: HandleDeclareFn) -> "Any":
+def build_grader_app(
+    state: dict[str, Any],
+    handle_declare: HandleDeclareFn,
+    validate_report: ValidateReportFn | None = None,
+) -> "Any":
     """Build the aiohttp app with the declare + gated /grader routes.
 
     Separated from the TCP bind (each sidecar owns its own ``start_http_server``)
@@ -300,17 +286,34 @@ def build_grader_app(state: dict[str, Any], handle_declare: HandleDeclareFn) -> 
     (config-snapshot fan-out, etc.) can differ while the HTTP wiring — routes,
     status codes, response bodies — stays byte-identical across substrates.
 
+    Filing a report and ending the episode are two different actions on two
+    different routes. They used to be one: POSTing an incident report froze the
+    agent and opened the graded soak, which made a piece of prose the only way to
+    stop the clock and made "did you write it up" inseparable from "did you fix
+    it". Splitting them means an agent can file its narrative and keep working,
+    or end the episode without one, and reward reads the same either way.
+
     Routes and their gates:
-      * ``POST /declare``       — 503 until the episode's LoadGen exists
-                                  (``state["lg"]`` is published by run_episode),
-                                  then the caller-supplied first-declare-wins
-                                  handler.
+      * ``POST /grader/episode-start`` — the final transition in Harbor's
+                                  environment-healthcheck command. It pins t0
+                                  after readiness and before setup. It uses the
+                                  verifier-only capability; an agent must not
+                                  choose its own origin.
+      * ``POST /report``        — advisory. Records the incident report and
+                                  returns. It never freezes the agent, never opens
+                                  the soak, and never reaches reward. First report
+                                  wins; a later one is 409 and changes nothing.
+      * ``POST /declare_repair_complete`` — THE explicit ending. 503 until the
+                                  episode's LoadGen exists (``state["lg"]`` is
+                                  published by run_episode), then the
+                                  caller-supplied first-declare-wins handler.
+                                  There is no deadline it can miss; an episode
+                                  that never calls it is frozen at its deadline
+                                  and graded from its final state.
       * ``GET /healthz``        — always 200 (the chart's liveness surface).
       * ``GET /grader/*`` — requires the verifier-only capability. An absent or
                               invalid capability always returns 403, before any
                               episode state is disclosed.
-      * ``POST /grader/finalize-undeclared`` — freezes the agent and requests
-                                  graceful null finalization at the profile floor.
       * ``GET /grader/episode_done`` — 503 until episode_done.json exists, then
                                   its payload (including any ``error`` field, so
                                   a grading failure surfaces FAST, not by timeout).
@@ -339,6 +342,56 @@ def build_grader_app(state: dict[str, Any], handle_declare: HandleDeclareFn) -> 
         # episode completion/reward state to the agent-facing network plane.
         return web.json_response({"error": "grader_access_forbidden"}, status=403)
 
+    async def _report(request: "Any") -> "Any":
+        """Record the advisory incident report. Never touches the lifecycle.
+
+        This handler is substrate-independent precisely because it has no
+        lifecycle authority: there is no snapshot to fan out and no boundary to
+        establish, only a file to write.
+        """
+        try:
+            body = await request.json()
+        except Exception as exc:  # noqa: BLE001 — malformed report body
+            return web.json_response(
+                {"ok": False, "error": f"report body is not valid JSON: {exc}"},
+                status=400,
+            )
+        try:
+            _validate_report_body(body)
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if validate_report is not None:
+            rejection = validate_report(body)
+            if rejection is not None:
+                return web.json_response({"ok": False, **rejection}, status=400)
+
+        report_lock = state.setdefault("report_lock", asyncio.Lock())
+        async with report_lock:
+            if state.get("report_written"):
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "error": "report_already_filed",
+                        "message": "the first incident report is kept; this one changed nothing",
+                    },
+                    status=409,
+                )
+            await asyncio.to_thread(_write_report, body)
+            state["report_written"] = True
+        return web.json_response(
+            {
+                "ok": True,
+                "advisory": True,
+                "message": (
+                    "incident report recorded. This does not end the episode and "
+                    "does not affect scoring; run declare_repair_complete when the "
+                    "repair is done."
+                ),
+            }
+        )
+
+    app.router.add_post(REPORT_PATH, _report)
+
     async def _declare(request: "Any") -> "Any":
         lg = state.get("lg")
         if lg is None:
@@ -355,9 +408,21 @@ def build_grader_app(state: dict[str, Any], handle_declare: HandleDeclareFn) -> 
                 task.cancel()
             raise
 
-    app.router.add_post("/declare", _declare)
+    app.router.add_post(DECLARE_PATH, _declare)
 
-    async def _finalize_undeclared(request: "Any") -> "Any":
+    async def _episode_start(request: "Any") -> "Any":
+        """Pin post-readiness t0 — THE episode origin.
+
+        The sole caller is Harbor's environment healthcheck command, emitted by
+        ``tools/generate_tasks.py``. Its shell command reaches this final leg
+        only after every readiness predicate passes; it runs before agent setup
+        for every agent, including NopAgent. The earlier
+        ``[[agent.setup_complete]]`` attempt was an ignored config key, not a
+        Harbor lifecycle hook.
+
+        Idempotent and first-wins: the clock can be started but never restarted,
+        so a retry cannot buy or lose a single second of window.
+        """
         if not _authorized(request):
             return _forbidden()
         lg = state.get("lg")
@@ -365,65 +430,20 @@ def build_grader_app(state: dict[str, Any], handle_declare: HandleDeclareFn) -> 
             return web.json_response(
                 {"ok": False, "error": "episode not started yet"}, status=503
             )
+        if not lg.bringup_complete:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "required bringup events are incomplete",
+                },
+                status=503,
+            )
+        pinned = lg.signal_episode_start()
+        return web.json_response(
+            {"ok": True, "pinned": pinned, "agent_window_s": _agent_window_s(lg)}
+        )
 
-        declaration_lock = state.setdefault("declaration_lock", asyncio.Lock())
-        try:
-            async with declaration_lock:
-                if EPISODE_DONE_JSON.exists() or lg.finished.is_set():
-                    return web.json_response(
-                        {"ok": True, "state": "episode_already_complete"}
-                    )
-                if (
-                    state.get("declaration_locked")
-                    or lg.declare_ts_s is not None
-                    or lg._declaration_pending.is_set()
-                ):
-                    return web.json_response(
-                        {"ok": True, "state": "declaration_already_accepted"}
-                    )
-                if state.get("undeclared_finalization") is not None:
-                    return web.json_response(
-                        {"ok": True, "state": "undeclared_finalization_requested"}
-                    )
-
-                if lg._t0 is None:
-                    raise RuntimeError("LoadGen is published without a pinned t0")
-                requested_s = asyncio.get_running_loop().time() - lg._t0
-                freezer_receipt = await request_agent_freeze(token)
-                if not lg.request_undeclared_finalization(requested_s=requested_s):
-                    if lg.finished.is_set() or not lg._accepting_declarations:
-                        return web.json_response(
-                            {"ok": True, "state": "episode_already_complete"}
-                        )
-                    raise RuntimeError(
-                        "LoadGen rejected undeclared finalization in an unexpected state"
-                    )
-                accepted_requested_s = lg.undeclared_finalize_requested_s
-                if accepted_requested_s is None:
-                    raise RuntimeError(
-                        "LoadGen accepted undeclared finalization without a request timestamp"
-                    )
-                state["undeclared_finalization"] = {
-                    "schema_version": 1,
-                    "reason": "verifier_started_without_declaration",
-                    "requested_s": round(accepted_requested_s, 6),
-                    "undeclared_evidence_min_s": (
-                        lg.profile.effective_undeclared_evidence_min_s()
-                    ),
-                    "agent_freezer_receipt": freezer_receipt,
-                }
-                return web.json_response(
-                    {"ok": True, "state": "undeclared_finalization_requested"}
-                )
-        except Exception as exc:
-            state["boundary_error"] = f"{type(exc).__name__}: {exc}"
-            lg.stop()
-            task = state.get("run_task")
-            if task is not None:
-                task.cancel()
-            raise
-
-    app.router.add_post("/grader/finalize-undeclared", _finalize_undeclared)
+    app.router.add_post("/grader/episode-start", _episode_start)
 
     async def _health(_request: "Any") -> "Any":
         if state.get("require_baseline") and not state.get("baseline_ready"):
@@ -461,6 +481,15 @@ def build_grader_app(state: dict[str, Any], handle_declare: HandleDeclareFn) -> 
     async def _grader_episode_done(_request: "Any") -> "Any":
         if not _authorized(_request):
             return _forbidden()
+        lg = state.get("lg")
+        if lg is not None and getattr(lg, "_t0", None) is None:
+            return web.json_response(
+                {
+                    "error": "episode clock was not pinned by Harbor's environment "
+                    "healthcheck; refusing to start timing from the verifier"
+                },
+                status=500,
+            )
         payload = _episode_done_payload()
         if payload is None:
             return web.json_response(

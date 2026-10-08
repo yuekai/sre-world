@@ -7,10 +7,9 @@
 #   mariadb   -> mysql "$DB_ADMIN_DSN" -e "SET GLOBAL <key> = <value>"
 #                 (dynamic system variables only; non-dynamic vars need a pod
 #                 restart via `restart-svc.sh` + chart-level values change).
-#   redis-*   -> CONFIG SET <key> <value> spoken as raw RESP over a python3
-#                 stdlib socket — the foothold image ships python3 but not
-#                 redis-cli, and CONFIG SET is a four-token exchange that does
-#                 not justify a package. Read-back via CONFIG GET confirms.
+#   redis-cache -> CONFIG SET <key> <value> over raw RESP.
+#   redis-queue -> a narrowly scoped maintenance endpoint persists approved
+#                  queue repairs in the generated startup script.
 set -euo pipefail
 
 kind="${1:-}"; key="${2:-}"; value="${3:-}"
@@ -39,11 +38,16 @@ case "$kind" in
     # knobs (maxmemory-policy etc.) take lowercase word values — additive v19
     # widening, the integer paths are unchanged.
     case "$key" in ''|*[!a-z0-9-]*) echo "redis key must be lowercase [a-z0-9-]" >&2; exit 2;; esac
-    case "$value" in
+    case "$key:$value" in
+      dequeue-acl:restore) ;;
+      dequeue-acl:*) echo "dequeue-acl accepts only value restore" >&2; exit 2 ;;
+      *)
+        case "$value" in
       0|[1-9]*[0-9]|[1-9]|[1-9]*[0-9]kb|[1-9]*[0-9]mb|[1-9]*[0-9]gb|[1-9]kb|[1-9]mb|[1-9]gb) ;;
       *[!a-z-]*) echo "redis value must be an integer with optional kb/mb/gb suffix, or a lowercase word" >&2; exit 2 ;;
       [a-z]|[a-z]*[a-z]) ;;
       *) echo "redis value must be an integer with optional kb/mb/gb suffix, or a lowercase word" >&2; exit 2 ;;
+        esac ;;
     esac ;;
 esac
 
@@ -60,7 +64,23 @@ case "$kind" in
     mysql --protocol=TCP -h "$mhost" -P "$mport" -u "$user" -p"$pw" -D "$db" \
           -e "SET GLOBAL ${key} = ${value};"
     ;;
-  redis-*)
+  redis-queue)
+    if [ "$key" = dequeue-acl ]; then
+      payload='{"operation":"dequeue-acl"}'
+    else
+      payload="$(python3 - "$key" "$value" <<'JSON_PY'
+import json, sys
+print(json.dumps({"operation": sys.argv[1], "value": sys.argv[2]}))
+JSON_PY
+)"
+    fi
+    curl --noproxy '*' -fsS --max-time 150 \
+      -H 'Content-Type: application/json' \
+      --data "$payload" \
+      http://frappe-admin:8000/admin/redis-queue-repair
+    echo
+    ;;
+  redis-cache)
     python3 - "$host" "$wait_port" "$key" "$value" <<'RESP_PY'
 import socket, sys
 

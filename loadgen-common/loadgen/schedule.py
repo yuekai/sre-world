@@ -20,7 +20,7 @@ Public surface (kept stable — imported by the harness as
   then continuing into the soak window with ``soak.peak`` / ``soak.trough``
   labels. The generator does NOT decide when soak starts in wall-clock terms;
   it simply keeps producing arrivals — the *runner* decides how long to consume
-  (declaration → ``soak_cycles`` full cycles → stop). Soak arrivals reuse the
+  (terminal freeze → ``soak_cycles`` full cycles → stop). Soak arrivals reuse the
   exact same phase shapes as the configured cycles.
 - ``iter_looped_arrivals(profile)`` / ``iter_soak_arrivals(profile)``: the
   LOOP-mode split of the same contract (``Profile.loop=True``). The pre-soak
@@ -28,7 +28,7 @@ Public surface (kept stable — imported by the harness as
   ``c4``, …) until ``declare_deadline_s``, so the load window is decoupled
   from the length of the ``cycles`` list; the soak stream comes from an
   INDEPENDENT seeded RNG so the graded window is byte-identical no matter
-  when the declare lands mid-loop. Consumed lazily by the runner (never
+  when the terminal boundary lands mid-loop. Consumed lazily by the runner (never
   materialized).
 
 Phase labels (per CONTRACTS.md):
@@ -92,11 +92,11 @@ class LoadEvent:
     event_name: str = ""    # admin_event: the /admin/event name to activate at fire_at_s
     target_service: str = "svc-message"  # admin_event: which svc-<role> hosts the /admin/event to fire
     auto_revert: bool = False  # admin_event: deactivate at fire_at_s+duration_s (the self-clearing blip)
-    # Temporal-oracle controls.  Defaults preserve every existing event's
-    # episode-relative, best-effort behaviour.
+    # Temporal-oracle controls. ``bringup`` is an explicit pre-t0 timeline for
+    # required manifestation/recovery preconditions that gate Harbor readiness.
     event_id: str = ""
     required: bool = False
-    anchor: str = "episode"  # "episode" (t0) or "declaration" (first declare)
+    anchor: str = "episode"  # "bringup", "episode" (t0), or "declaration"
 
     # admin_command: signed, receipt-validated service control. Unlike an
     # admin_event configuration toggle, this is an authenticated temporal
@@ -146,17 +146,17 @@ class Profile:
         cycles: List of ``(peak_s, peak_rps, trough_s, trough_rps)`` tuples,
             one per load cycle. Each cycle is a peak phase immediately followed
             by a trough phase.
-        soak_cycles: Number of additional full cycles to run after a
-            resolution is declared. Soak cycles reuse the *shape* of the
+        soak_cycles: Number of additional full cycles to run after the terminal
+            freeze, whether report-driven or window-driven. Soak cycles reuse the *shape* of the
             configured cycles (cycle index ``i`` of the soak reuses
             ``cycles[i % len(cycles)]``), but are labelled ``soak.peak`` /
             ``soak.trough`` so the oracle can isolate the post-fix window.
-        declare_deadline_s: Wall-clock time (seconds from t0) by which a
-            resolution must be declared. Equals the end of the configured
-            cycles (warmup + sum of all cycle durations).
-        undeclared_evidence_min_s: Optional verifier-authorized floor for an
-            undeclared episode. ``None`` preserves the historical behavior and
-            uses ``declare_deadline_s``. Explicit values are measured from t0.
+        declare_deadline_s: Legacy schema name for the pre-soak schedule end,
+            measured from t0. D28 derives it from the task's single
+            ``agent_window_s`` episode budget; it does not limit report intake.
+        undeclared_evidence_min_s: Retired compatibility field. D28 task
+            resolution forces it to ``None``; it remains parseable for old
+            profile data but has no runner control path.
         drivers: Optional list of driver-name strings selecting the request KIND
             fired per arrival (resolved against ``runner.DRIVERS``). ``None``
             (the default) means "use ``runner.DEFAULT_DRIVERS``" — i.e. the
@@ -215,22 +215,19 @@ class Profile:
     # c4, …, shape = cycles[(i-1) % len(cycles)]) until ``declare_deadline_s``,
     # instead of the schedule ending after ``len(cycles)`` cycles. This
     # decouples the load window from the length of the cycles list — no more
-    # hand-built ``[(...)] * 25`` eval profiles; set ``declare_deadline_s`` to
-    # whatever window the episode needs. The episode still ENDS (the verifier
-    # must see episode_done.json): a declare triggers the normal soak window.
-    # Without a verifier lifecycle signal, a nop stops at
-    # ``declare_deadline_s``; an authorized signal may stop it at the complete
-    # cycle selected by ``undeclared_evidence_min_s``. In loop mode the SOAK
+    # hand-built ``[(...)] * 25`` eval profiles. The compatibility-named
+    # ``declare_deadline_s`` is the finite pre-soak schedule end. D28 task
+    # resolution derives it from ``agent_window_s`` and rejects competing inline
+    # timing fields; loadgen itself owns window expiry, freezing, and soak. In
+    # loop mode the SOAK
     # stream is drawn from an independent seeded RNG (``f"{seed}:soak"``) so the graded window is
-    # byte-identical regardless of when the declare lands mid-loop. The runner
+    # byte-identical regardless of when the terminal boundary lands mid-loop. The runner
     # streams loop arrivals lazily (never materializes the full window).
     loop: bool = False
 
-    # Keep the post-declaration soak on the same warmup-relative cycle grid as
-    # pre-declaration traffic.  This is required when an external controller is
-    # scheduled against the load epoch: rebasing a soak peak to an arbitrary
-    # declaration instant would silently invalidate every peak/trough offset.
-    # Default-off preserves the historical immediate-soak behavior.
+    # Legacy opt-in marker retained in the profile schema. D28's runner always
+    # aligns the post-freeze soak to the warmup-relative cycle grid; setting this
+    # field additionally requires equal cycle durations at profile validation.
     align_soak_to_cycle: bool = False
 
     # --- Traffic noise (opt-in; defaults OFF => streams byte-identical) -------
@@ -258,7 +255,7 @@ class Profile:
         """End of the pre-soak schedule (== declare_deadline_s).
 
         Non-loop: warmup + the configured cycles. Loop: the cycles repeat until
-        ``declare_deadline_s``, so the deadline IS the schedule end.
+        the compatibility-named ``declare_deadline_s`` schedule end.
         """
         if self.loop:
             return self.declare_deadline_s
@@ -271,12 +268,6 @@ class Profile:
             self.cycles[index % n_cycles][0] + self.cycles[index % n_cycles][2]
             for index in range(self.soak_cycles)
         )
-
-    def effective_undeclared_evidence_min_s(self) -> float:
-        """Return the t0-relative floor used by graceful undeclared finalization."""
-        if self.undeclared_evidence_min_s is None:
-            return self.declare_deadline_s
-        return self.undeclared_evidence_min_s
 
 
 def _validate_profile(profile: Profile) -> None:
@@ -334,10 +325,10 @@ def _validate_profile(profile: Profile) -> None:
             raise ValueError(
                 f"profile {profile.name!r} LoadEvent has negative fire_at_s ({ev.fire_at_s})"
             )
-        if ev.anchor not in {"episode", "declaration"}:
+        if ev.anchor not in {"bringup", "episode", "declaration"}:
             raise ValueError(
-                f"profile {profile.name!r} LoadEvent anchor must be 'episode' or "
-                f"'declaration', got {ev.anchor!r}"
+                f"profile {profile.name!r} LoadEvent anchor must be 'bringup', "
+                f"'episode', or 'declaration', got {ev.anchor!r}"
             )
         if ev.event_id:
             if ev.event_id in event_ids:
@@ -348,6 +339,18 @@ def _validate_profile(profile: Profile) -> None:
         if (ev.required or ev.anchor == "declaration") and not ev.event_id:
             raise ValueError(
                 f"profile {profile.name!r} required/declaration LoadEvent requires event_id"
+            )
+        if ev.anchor == "bringup" and (
+            not ev.required or not ev.release_agent_on_recovery
+        ):
+            raise ValueError(
+                f"profile {profile.name!r} bringup LoadEvent must be required and "
+                "release_agent_on_recovery"
+            )
+        if ev.release_agent_on_recovery and ev.anchor != "bringup":
+            raise ValueError(
+                f"profile {profile.name!r} release_agent_on_recovery requires "
+                "anchor='bringup' so readiness cannot wait on episode t0"
             )
         if ev.kind == "keyspace_surge":
             if ev.anchor != "episode" or ev.required:
@@ -443,27 +446,17 @@ def _validate_profile(profile: Profile) -> None:
                     f"profile {profile.name!r} commit_timeout_event "
                     "acknowledgement_delay_ms must exceed client_deadline_ms"
                 )
-            if ev.anchor == "episode":
-                if ev.release_agent_on_recovery is not True:
-                    raise ValueError(
-                        f"profile {profile.name!r} episode commit_timeout_event must "
-                        "release the agent after recovery"
-                    )
+            if ev.anchor == "bringup":
                 if ev.consecutive_healthy < 1 or ev.observation_period_s <= 0:
                     raise ValueError(
-                        f"profile {profile.name!r} episode commit_timeout_event requires "
+                        f"profile {profile.name!r} bringup commit_timeout_event requires "
                         "positive consecutive_healthy and observation_period_s"
                     )
-            elif ev.release_agent_on_recovery:
-                raise ValueError(
-                    f"profile {profile.name!r} declaration commit_timeout_event must "
-                    "not release the agent"
-                )
         elif ev.kind == "maintenance_epoch":
-            if ev.anchor != "episode" or not ev.required or not ev.event_id:
+            if ev.anchor != "bringup" or not ev.required or not ev.event_id:
                 raise ValueError(
                     f"profile {profile.name!r} maintenance_epoch must be a required "
-                    "episode event with a stable event_id"
+                    "bringup event with a stable event_id"
                 )
             if ev.duration_s != 0:
                 raise ValueError(
@@ -626,7 +619,7 @@ def _noise_rng(profile: Profile, stream: str) -> random.Random | None:
     A SEPARATE stream from the arrival RNG so enabling/disabling noise never
     moves the underlying arrival-process draws, and the loop-mode soak can use
     its own stream (``"noise:soak"``) that is independent of how many pre-soak
-    phases ran before the declare. String seeding is stable across platforms
+    phases ran before the terminal boundary. String seeding is stable across platforms
     and Python versions (SHA-512 based).
     """
     if profile.rate_jitter <= 0.0:
@@ -681,11 +674,11 @@ def iter_arrivals(profile: Profile) -> Iterator[tuple[float, str]]:
     A SINGLE seeded RNG drives every phase, so soak arrivals are a genuine
     continuation of the same stochastic process (no re-seeding at the soak
     boundary). The runner consumes from this iterator and decides — based on
-    when declaration happens — how far into the soak window to go.
+    when the terminal freeze happens — how far into the soak window to go.
 
     Note: the soak window emitted here is the maximum the runner may need
     (``soak_cycles`` cycles). The runner stops consuming once it has run the
-    requested number of post-declaration cycles.
+    requested number of post-freeze cycles.
     """
     _validate_profile(profile)
     rng = random.Random(profile.seed)
@@ -777,7 +770,7 @@ def iter_soak_arrivals(profile: Profile) -> Iterator[tuple[float, str]]:
 
     Drawn from an INDEPENDENT seeded RNG (``f"{seed}:soak"``; noise from
     ``f"{noise_seed}:noise:soak"``) so the graded soak window is byte-identical
-    regardless of when the declare interrupted the pre-soak loop — the same
+    regardless of when the terminal boundary interrupted the pre-soak loop — the same
     fixed-soak-stream property the non-loop path gets from splitting one
     materialized timeline by label.
     """
@@ -897,9 +890,9 @@ def _build_profile(name: str, spec: dict[str, Any], known: dict[str, Profile]) -
             raise ValueError(f"profile {name!r}: repeat_cycles must be an int >= 1, got {repeat!r}")
         profile = dataclasses.replace(profile, cycles=list(profile.cycles) * repeat)
 
-    # declare_deadline_s: required with loop (the loop window IS the deadline);
-    # otherwise defaults to the schedule end — recomputed whenever this file
-    # changed the shape (cycles/repeat/warmup) without pinning a deadline.
+    # declare_deadline_s: legacy schema name for the pre-soak schedule end;
+    # required with loop, otherwise derived whenever this file changes the shape
+    # (cycles/repeat/warmup) without pinning an end.
     deadline_given = "declare_deadline_s" in spec
     if profile.loop and not deadline_given and (base_name is None or not known[base_name].loop):
         raise ValueError(f"profile {name!r}: loop=true requires declare_deadline_s")
