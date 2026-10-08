@@ -125,7 +125,8 @@ jobs:
   kind-surface:
     needs: impact
     if: ${{ contains(fromJSON(needs.impact.outputs.kind_surface_substrates), 'slack-spine') }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    # GitHub-hosted: the original's Blacksmith runners do not exist on this fork.
+    runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
       SURFACE_KIND_CLUSTER: surface-contract
