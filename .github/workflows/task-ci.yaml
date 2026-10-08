@@ -49,7 +49,9 @@ jobs:
             echo "::error::task impact JSON was not produced"; exit 1;
           }
           {
-            echo "tasks=$(jq -c .affected_tasks /tmp/impact.json)"
+            # Names only: per-task reasons can exceed the 1 MB job-output limit
+            # on a wide change; the full detail is in the task-impact artifact.
+            echo "tasks=$(jq -c '[.affected_tasks[].task]' /tmp/impact.json)"
             echo "build_substrates=$(jq -c .build_substrates /tmp/impact.json)"
             echo "kind_surface_substrates=$(jq -c .kind_surface_substrates /tmp/impact.json)"
             echo "blockers=$(jq -c .blockers /tmp/impact.json)"
