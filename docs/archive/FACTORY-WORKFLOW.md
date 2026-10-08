@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: the conductor's runbook for the original's factory, scheduled around its Blacksmith runner pool; neither runs on this fork. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # FACTORY-WORKFLOW — the conductor's runbook
 
 The executable companion to [`FACTORY.md`](FACTORY.md).

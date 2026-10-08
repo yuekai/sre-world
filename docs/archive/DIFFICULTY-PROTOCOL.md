@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: a 2026-08 protocol for real-agent difficulty trials on the original's infrastructure; it was not carried into the reconstruction. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # Difficulty-evidence protocol — real-agent trials
 
 Last updated: 2026-08-25. Companion to `docs/TASK-QUALITY-RUBRIC.md` (row C4),

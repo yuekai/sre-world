@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: a 2026-08-25 analysis of Frappe scenarios, most of which were retired in the 2026-10 reconstruction. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # The Frappe capture-surface gap — Redis has no state-probe plane
 
 *(Scope note: this is about a MISSING per-tier probe plane, not a broken gate. The

@@ -9,7 +9,7 @@ here. Paper notes: [`2605.07161.md`](2605.07161.md) (SREGym), [`2601.20882.md`](
 (DevOps-Gym), [`2601.08806.md`](2601.08806.md) (APEX-SWE).
 
 Pipeline work the papers argue for that the repo does not do yet lives in
-[`docs/TASK-QUALITY-IMPROVEMENTS.md`](../TASK-QUALITY-IMPROVEMENTS.md); this file is a
+[`docs/archive/TASK-QUALITY-IMPROVEMENTS.md`](../archive/TASK-QUALITY-IMPROVEMENTS.md); this file is a
 reference, not a work plan.
 
 ---

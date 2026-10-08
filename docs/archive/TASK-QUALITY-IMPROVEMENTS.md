@@ -1,7 +1,9 @@
+> **Archived 2026-10-07.** Historical: a 2026-08 backlog of task-pipeline improvements for the original; open debt for this fork lives in docs/plans/tech-debt.md. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # Task-quality pipeline improvements
 
 Things the three source papers argue for — or that scoring four scenarios against
-[`TASK-QUALITY-RUBRIC.md`](TASK-QUALITY-RUBRIC.md) exposed — that the pipeline does not do
+[`TASK-QUALITY-RUBRIC.md`](../TASK-QUALITY-RUBRIC.md) exposed — that the pipeline does not do
 yet. Each item states what is argued, what we do today, what it would take, and what it
 would cost. They are suggestions, not commitments; nothing here changes what an author
 must do to ship a scenario. Paper short names (DG / SG / AX) and citation style are the
@@ -384,7 +386,7 @@ the *ordering* is the problem.
 
 ---
 
-_Entries 13–15 come from the long-form criteria pass in [`docs/research/TASK-QUALITY-CRITERIA.md`](research/TASK-QUALITY-CRITERIA.md); they reference that file's criterion ids (C5/F2, D1, F3/E4)._
+_Entries 13–15 come from the long-form criteria pass in [`docs/research/TASK-QUALITY-CRITERIA.md`](../research/TASK-QUALITY-CRITERIA.md); they reference that file's criterion ids (C5/F2, D1, F3/E4)._
 
 ## 12. Ranking by value-for-cost
 

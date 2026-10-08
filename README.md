@@ -68,9 +68,8 @@ tools/                       Generator, calibration harness, validators, local r
 loadgen-common/              Grading helpers shared by every loadgen image.
 ci_checks/                   Task-quality and anti-cheat QA (deterministic hard gate plus
                              an advisory LLM rubric).
-docs/                        DECISIONS.md, SUBSTRATE-INTERFACE.md, AGENT-SURFACES.md,
-                             BUILDS_ARCHITECTURE.md, LOADGEN-PROFILES.md, LESSONS.md,
-                             archive/.
+docs/                        Live docs, indexed in docs/README.md; plans/ (execution
+                             plans, tech debt); archive/ (historical, not maintained).
 validate.sh                  The validation suite (run this).
 ```
 

@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: a runbook for the original's scenario factory, which ran on its Blacksmith runner pool and `/calibrate` workflow; neither runs on this fork. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # FACTORY — how a fault scenario gets made
 
 Standard operating procedure for producing new fault scenarios on the sre-world
@@ -14,10 +16,10 @@ Companion documents, cited rather than restated:
 
 | doc | what it is |
 |---|---|
-| [`KILL-LEDGER.md`](KILL-LEDGER.md) | every refuted candidate + the **walls** (W1–W9) this SOP screens against |
-| [`AUTHORING-FRAPPE.md`](AUTHORING-FRAPPE.md) | the substrate's enforced contracts; §1.5 is the corridor method and dead-knob list |
-| [`TASK-QUALITY-RUBRIC.md`](TASK-QUALITY-RUBRIC.md) | the scored criteria; which are blocking and which are human-only |
-| [`DECISIONS.md`](DECISIONS.md) D15 | the controlled-variant ("ladder") policy |
+| [`KILL-LEDGER.md`](../KILL-LEDGER.md) | every refuted candidate + the **walls** (W1–W9) this SOP screens against |
+| [`AUTHORING-FRAPPE.md`](../AUTHORING-FRAPPE.md) | the substrate's enforced contracts; §1.5 is the corridor method and dead-knob list |
+| [`TASK-QUALITY-RUBRIC.md`](../TASK-QUALITY-RUBRIC.md) | the scored criteria; which are blocking and which are human-only |
+| [`DECISIONS.md`](../DECISIONS.md) D15 | the controlled-variant ("ladder") policy |
 | `tools/task_scorecard.py` | the tier ladder — what a *passing* fence still fails to prove |
 
 [`FACTORY-WORKFLOW.md`](FACTORY-WORKFLOW.md) is the executable companion to this

@@ -26,10 +26,9 @@ four small ones; the others are below.
   and never had a D17. Entries are now ascending (content unchanged), the gap is
   noted, and a test keeps the numbering ordered.
 
-## Not done
+## Later
 
-- Gap 1, local runs under `jobs/` break `verifier/test_grader_parity.py`: offered
-  as a separate task.
-- Gap 5, a CI smoke test for the Kind environment's network policy behaviour.
-- Gap 6, separating live docs from historical ones under `docs/` (needs a go-ahead
-  for the restructure).
+The other three gaps were closed afterwards: gap 1 (local runs under `jobs/`
+broke `verifier/test_grader_parity.py`) in `f503378`, gap 5 (`./validate.sh kind`,
+`.github/workflows/kind-netpol.yaml`) in `4fa7200`, and gap 6 in
+[2026-10-07-docs-live-vs-archive.md](2026-10-07-docs-live-vs-archive.md).

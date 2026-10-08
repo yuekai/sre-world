@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: onboarding for the original's task factory (2026-08 Frappe sprint), built on CI that does not run on this fork. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # Task-factory playbook — from "I have a substrate" to "an in-band task on main"
 
 **Who this is for.** An agent (or a person) onboarding onto the task factory for a substrate

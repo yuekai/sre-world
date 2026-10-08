@@ -5,7 +5,7 @@ It is calibrated against four existing scenarios (§4) and every criterion names
 repo mechanism that backs it — or says plainly that nothing does. It is usable without
 reading the source papers; the citations are there so each claim can be checked.
 
-Companion file: [`TASK-QUALITY-IMPROVEMENTS.md`](TASK-QUALITY-IMPROVEMENTS.md) lists what
+Companion file: [`TASK-QUALITY-IMPROVEMENTS.md`](archive/TASK-QUALITY-IMPROVEMENTS.md) lists what
 the papers argue for that the pipeline does not do yet. The long-form evidence base —
 33 criteria each traced to a paper section and a repo mechanism — is
 [`research/TASK-QUALITY-CRITERIA.md`](research/TASK-QUALITY-CRITERIA.md); this sheet is
@@ -407,7 +407,7 @@ trials with mean reward in `(0.00, 0.60]`, required by `task-qualification`
 *Check.* `REVIEWER.md` records ≥1 real-agent trial (model, budget, reward, what the
 transcript shows it tried). One timed-out run is weak evidence, but it is evidence.
 
-*Protocol.* [`DIFFICULTY-PROTOCOL.md`](DIFFICULTY-PROTOCOL.md) specifies what would
+*Protocol.* [`DIFFICULTY-PROTOCOL.md`](archive/DIFFICULTY-PROTOCOL.md) specifies what would
 turn this row green: the failure-mode taxonomy (an ordered, transcript-derivable
 decision procedure), n = 5 per (task, model) and what that n does and does not buy,
 the `## C4 — difficulty evidence` block this row is scored from, and the run sheet.

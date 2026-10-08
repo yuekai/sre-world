@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: trajectory evidence as of 2026-09-02 for a ~57-task corpus; the reconstruction ships 20 of them. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # How agents win and lose — trajectory evidence for every task
 
 *Full-corpus validity and win/loss report · evidence as of 2026-09-02.*

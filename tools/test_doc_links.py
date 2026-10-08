@@ -20,6 +20,8 @@ DOCS = [
     REPO / "verifier" / "README.md",
     *sorted((REPO / "docs").glob("*.md")),
     *sorted((REPO / "docs" / "plans").glob("*.md")),
+    *sorted((REPO / "docs" / "research").glob("*.md")),
+    *sorted((REPO / "docs" / "archive").glob("*.md")),
 ]
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
 _STATUS = re.compile(r"^Status: (active|completed|abandoned)$")
@@ -97,6 +99,17 @@ def test_decisions_are_numbered_in_order() -> None:
         f"docs/DECISIONS.md entries run {numbers}; expected {expected}. Keep entries "
         "in ascending order and give a new decision the next number (AGENTS.md "
         "Rules: Decisions)."
+    )
+
+
+def test_docs_index_lists_every_top_level_doc() -> None:
+    index = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
+    listed = set(re.findall(r"\]\(([A-Za-z0-9_-]+\.md)\)", index))
+    present = {p.name for p in (REPO / "docs").glob("*.md")} - {"README.md"}
+    assert listed == present, (
+        f"docs/README.md is out of step with docs/: unlisted {sorted(present - listed)}, "
+        f"listed but missing {sorted(listed - present)}. Add a live doc to the index "
+        "table; move a historical one to docs/archive/ with a banner instead."
     )
 
 

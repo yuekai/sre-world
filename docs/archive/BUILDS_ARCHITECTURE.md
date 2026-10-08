@@ -1,3 +1,5 @@
+> **Archived 2026-10-07.** Historical: describes the original's trial infrastructure (Blacksmith calibration fan-out, Daytona/Oddish), which this fork does not run. Kept for the record; do not update. Current docs are indexed in [docs/README.md](../README.md).
+
 # Builds architecture — how trials run fast today
 
 This doc used to be a design/backlog proposal for speeding up Daytona trial iteration ("levers A–E"). Almost none of that backlog was built as written; the bottleneck was solved differently. What follows describes only what exists in the repo today, verified against `.github/workflows/`, `tools/push_images.py`, and `substrates/*/build.sh`. The original lever analysis is summarized at the end for the record.
