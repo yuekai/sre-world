@@ -57,9 +57,9 @@ thresholds:
 
   p99_ms_by_phase:
     peak: 304
-    trough: 311
-  error_rate_max: 0.1002
-  goodput_min_ratio: 0.7998
+    trough: 306
+  error_rate_max: 0.1
+  goodput_min_ratio: 0.8
 health_ref:
   inherit: [p99_ms_by_phase, error_rate_max, goodput_min_ratio]
 
@@ -89,7 +89,7 @@ calibration:
 verification:
   version: 2
   materializers:
-  - legacy_outcome
+  - outcome
   - repair_scope
   - traffic_reconciliation
   public_requirements:
@@ -111,31 +111,32 @@ verification:
     text: keep capacity and unrelated services intact
   - id: 13-D-1
     text: The first report is final.
-  completion:
-    required: true
-    requirement_ids: [13-D-1]
-    summary: A non-null report completed and froze the run; its contents are advisory.
   outcome:
     checks:
     - id: sustained_latency
       requirement_ids: [13-O-1]
       summary: Peak and trough p90 message latency satisfy the disclosed two-cycle limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency/pass}
       assert: {op: equals, value: true}
     - id: sustained_error_rate
       requirement_ids: [13-O-1]
       summary: Message error rate satisfies the disclosed limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/error_rate/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/error_rate/pass}
       assert: {op: equals, value: true}
     - id: sustained_correct_goodput
       requirement_ids: [13-O-1]
       summary: Correct message goodput satisfies the disclosed floor.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/goodput/pass}
+      assert: {op: equals, value: true}
+    - id: sustained_session_post_lane
+      requirement_ids: [13-O-1]
+      summary: The causal session-post lane satisfies its disclosed goodput floor and error-rate limit.
+      observe: {artifact: derived/outcome.json, pointer: /checks/by_driver/per_driver/session_post/pass}
       assert: {op: equals, value: true}
     - id: required_services_running
       requirement_ids: [13-O-1]
       summary: Every required service is running at final collection.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
+      observe: {artifact: derived/outcome.json, pointer: /checks/services_up/value/all_running}
       assert: {op: equals, value: true}
     - id: offered_work_reconciled
       requirement_ids: [13-O-2]
@@ -144,13 +145,6 @@ verification:
       assert: {op: equals, value: true}
   safe_repair:
     packs:
-    - name: correct_goodput
-      checks:
-      - id: accepted_work_correct
-        requirement_ids: [13-O-1, 13-O-2]
-        summary: Accepted session-post work meets the published correct-goodput floor.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
-        assert: {op: equals, value: true}
     - name: traffic_reconciliation
       checks:
       - id: no_traffic_suppression
@@ -162,13 +156,6 @@ verification:
         requirement_ids: [13-O-2]
         summary: The protected workload contains nonzero scheduled work.
         observe: {artifact: derived/traffic-reconciliation.json, pointer: /nonzero_scheduled}
-        assert: {op: equals, value: true}
-    - name: service_health
-      checks:
-      - id: required_services_up
-        requirement_ids: [13-O-1, 13-SR-6]
-        summary: Every required service remains healthy throughout the soak.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
         assert: {op: equals, value: true}
     - name: runtime_persistence
       checks:
@@ -406,9 +393,7 @@ verification:
         observe: {artifact: challenge/restart-receipt.json, pointer: /protected_bundle/bytes}
         assert: {op: gt, value: 0}
     require:
-    - correct_goodput
     - traffic_reconciliation
-    - service_health
     - runtime_persistence
     - active_restart_challenge
     - message_restart_challenge

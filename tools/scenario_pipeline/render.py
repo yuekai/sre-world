@@ -566,7 +566,7 @@ def _render_verification(record: dict[str, Any], prose: dict[str, str]) -> dict[
 
     return {
         "version": 2,
-        "materializers": ["incident_report", "legacy_outcome", "mariadb_state", "repair_scope"],
+        "materializers": ["incident_report", "outcome", "mariadb_state", "repair_scope"],
         "public_requirements": requirements,
         "completion": {
             "required": True,

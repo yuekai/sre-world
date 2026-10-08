@@ -86,14 +86,13 @@ def _render_test_sh(
             f"verifier_timeout_sec={verifier_timeout_sec} leaves a poll budget of "
             f"{iters} iterations (<20) — too small to ever fetch a verdict."
         )
-    if oracle_module == "verifier_v2.evaluate":
-        from tools.verifier_v2.stock_harbor import render_test_sh as render_v2_test_sh
+    if oracle_module == "verifier.evaluate":
+        from verifier.stock_harbor import render_test_sh as render_v2_test_sh
 
         try:
-            rendered = render_v2_test_sh(verifier_timeout_sec, grader_url)
+            return render_v2_test_sh(verifier_timeout_sec, grader_url, broker=grader_broker)
         except ValueError as exc:
             _die(str(exc))
-        return use_root_only_grader_broker(rendered) if grader_broker else rendered
     reward_imports = "from oracle.assemble import verdict_to_rewards"
     metrics_write = ""
     reward_call = "verdict_to_rewards(verdict)"
@@ -160,6 +159,7 @@ def _render_task_toml(
     spec: dict[str, Any],
     sub: Substrate,
     agent_surface: str,
+    lock: dict[str, Any] | None = None,
 ) -> str:
     """Build the HOSTED-CANONICAL task.toml from the spec + the manifest's harbor
     wiring: Daytona sizing (harbor.resources.hosted; per-spec metadata override),
@@ -293,8 +293,15 @@ def _render_task_toml(
         # Frappe's loadgen gates /healthz until site/session bootstrap, optional
         # post-site runtime fault activation, and direct baseline capture have
         # all completed.  The solving agent must never race those boundaries.
-        healthcheck_command = (
-            "curl -fsS loadgen:9100/healthz >/dev/null && " + healthcheck_command
+        # Each readiness check is labelled so a bring-up failure names itself.
+        checks = [
+            ("loadgen-healthz", "curl -fsS loadgen:9100/healthz >/dev/null"),
+            ("frappe-web-ping", healthcheck_command),
+        ]
+        healthcheck_command = " && ".join(
+            f"({command}) || {{ rc=$?; printf 'FATAL: readiness check {label} "
+            "failed (rc=%s)\\n' \"$rc\" >&2; exit \"$rc\"; }"
+            for label, command in checks
         )
     if agent_surface == "build-capable":
         healthcheck_command = (
@@ -312,6 +319,20 @@ def _render_task_toml(
         healthcheck_command = (
             episode_ready_command + " && " + healthcheck_command
         )
+    # The agent window starts only once the harness tells the grader the episode
+    # began, so readiness and agent setup never eat into the graded window.
+    if sub.name == "frappe":
+        episode_start = (
+            "curl --unix-socket /run/verifier-broker/grader.sock -fsS -X POST "
+            "http://localhost/grader/episode-start >/dev/null"
+        )
+    else:
+        episode_start = (
+            'curl -fsS -X POST -H "X-SRE-World-Grader-Access: '
+            '$(cat /run/verifier/grader-access/token)" '
+            f"{sub.grader_url}/grader/episode-start >/dev/null"
+        )
+    healthcheck_command = f"({healthcheck_command}) && {episode_start}"
     internet_justification = ""
     setup_boundary_toml = ""
     egress_confined = agent_surface == "confined"
@@ -330,20 +351,9 @@ def _render_task_toml(
         internet_justification = (
             'open_internet_justification = "The Kubernetes environment needs '
             "public connectivity for trusted harness installation and model APIs; "
-            "the platform-owned boundary restores restricted egress before any agent "
-            'command runs."\n'
+            "the task-owned egress proxy confines the agent to "
+            'agentEgressProxy.allowedHosts from pod start."\n'
         )
-        setup_boundary_toml = """[[agent.setup_begin]]
-command = "/usr/local/bin/set-agent-egress-phase bootstrap"
-timeout_sec = 150.0
-user = "root"
-
-[[agent.setup_complete]]
-command = "/usr/local/bin/set-agent-egress-phase runtime"
-timeout_sec = 150.0
-user = "root"
-
-"""
     else:
         if bool(m.get("eval_ready", True)):
             _die(
@@ -355,6 +365,22 @@ user = "root"
             "release-quarantined and cannot become eval_ready until equivalent "
             'agent egress confinement exists."\n'
         )
+    window_toml = "".join(
+        f"{key} = {float(m[key])}\n" for key in ("agent_window_s", "soak_s") if key in m
+    )
+    platform_toml = ""
+    tools = substrate_mod.platform_tools_ref(sub, lock) if lock else None
+    if tools is not None:
+        platform_toml += f"platform_tools_digest = {_toml_string(tools[1])}\n"
+    if egress_confined:
+        chart_values = _load_yaml(sub.chart_dir / "values.yaml")
+        hosts = ((chart_values.get("agentEgressProxy") or {}).get("allowedHosts")) or []
+        if hosts:
+            platform_toml += (
+                "oddish_agent_egress_allowed_hosts = ["
+                + ", ".join(_toml_string(h) for h in hosts)
+                + "]\n"
+            )
     verifier_transport_toml = (
         'GRADER_BROKER_SOCKET = "/run/verifier-broker/grader.sock"'
         if sub.name == "frappe"
@@ -376,8 +402,8 @@ causal_distance = {m["causal_distance"]}
 temporal_emergence = {_toml_bool(m["temporal_emergence"])}
 fault_presentation = "{m["fault_presentation"]}"
 profile = "{m["profile"]}"
-agent_surface = "{agent_surface}"
-{internet_justification}
+{window_toml}agent_surface = "{agent_surface}"
+{platform_toml}{internet_justification}
 [environment]
 build_timeout_sec = {build_timeout_sec}
 cpus = {cpus}
@@ -423,7 +449,7 @@ LOADGEN_GRADER_URL = "{sub.grader_url}"
 """
 
 
-def _render_fault_values(spec: dict[str, Any]) -> str:
+def _render_fault_values(spec: dict[str, Any], sub: Substrate | None = None) -> str:
     # The load profile is metadata-driven (spec.task.metadata.profile), NOT part of
     # spec.fault.values — so it does NOT count as a "fault" knob and is intentionally
     # outside the _assert_runtime_overlay_clean allowlist (which inspects only
@@ -443,13 +469,15 @@ def _render_fault_values(spec: dict[str, Any]) -> str:
     # loader keeps only the last mapping — silently dropping the scenario's loadgen.*
     # keys. Merging into one block makes the emitted overlay a single loadgen mapping.
     body = yaml.safe_dump(
-        _fault_overlay_values(spec), sort_keys=False, default_flow_style=False
+        _fault_overlay_values(spec, sub), sort_keys=False, default_flow_style=False
     )
 
     return body
 
 
-def _fault_overlay_values(spec: dict[str, Any]) -> dict[str, Any]:
+def _fault_overlay_values(
+    spec: dict[str, Any], sub: Substrate | None = None
+) -> dict[str, Any]:
     """The task's difficulty and fault values, with fault values taking precedence.
 
     ``difficulty.values`` controls benchmark pressure without pretending those
@@ -472,6 +500,14 @@ def _fault_overlay_values(spec: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(lg, dict):
         _die("spec difficulty/fault loadgen values must be a mapping when present")
     lg["profile"] = profile
+    if sub is not None and "agent_window_s" in metadata:
+        lg["profilesYaml"] = substrate_mod.normalize_window_profiles(
+            sub,
+            lg.get("profilesYaml"),
+            profile,
+            float(metadata["agent_window_s"]),
+            float(metadata.get("soak_s", 0.0)),
+        )
     # Harness-only temporal evidence targets are metadata rather than fault bytes,
     # so image-tier scenarios can keep fault.values empty while declaring the
     # private scrapes and snapshots required for grading.
@@ -729,6 +765,9 @@ def _registry_values(
             for key in sub.custom_images
         },
     }
+    tools = substrate_mod.platform_tools_ref(sub, lock)
+    if tools is not None:
+        overlay["platformTools"] = {"enabled": True, "image": tools[0], "digest": tools[1]}
     return overlay
 
 
@@ -1601,12 +1640,12 @@ def _v2_contract(manifest: dict[str, Any]):
         return None
     if not isinstance(verification, dict) or verification.get("version") != 2:
         _die("ground-truth verification.version must be 2 when verification is present")
-    from tools.verifier_v2.contract import load_contract
+    from verifier.contract import load_contract
 
     try:
         return load_contract(manifest)
     except RuntimeError as exc:
-        _die(f"invalid verifier-v2 contract: {exc}")
+        _die(f"invalid verifier contract: {exc}")
 
 
 def _v2_challenge_overlay(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -1617,33 +1656,33 @@ def _v2_challenge_overlay(manifest: dict[str, Any]) -> dict[str, Any]:
         or contract.challenge["type"] != "fixed_pod_restart"
     ):
         return {}
-    from tools.verifier_v2.challenge_generation import fixed_restart_overlay
+    from verifier.challenge_generation import fixed_restart_overlay
 
     return fixed_restart_overlay(contract.challenge)
 
 
 def _v2_evidence_overlay(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Opt only verifier-v2 tasks into persistent grader-owned evidence."""
+    """Opt only verifier tasks into persistent grader-owned evidence."""
     verification = manifest.get("verification")
     if not isinstance(verification, dict) or verification.get("version") != 2:
         return {}
     return {
-        "gradingHarness": {"verifierV2Evidence": {"persistent": True, "size": "256Mi"}}
+        "gradingHarness": {"verifierEvidence": {"persistent": True, "size": "256Mi"}}
     }
 
 
-_V2_CHALLENGE_TEMPLATE = r"""{{- $cfg := .Values.gradingHarness.verifierV2Challenge }}
+_V2_CHALLENGE_TEMPLATE = r"""{{- $cfg := .Values.gradingHarness.verifierChallenge }}
 {{- if $cfg.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: verifier-v2-challenge
+  name: verifier-challenge
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: verifier-v2-challenge-fixed-target
+  name: verifier-challenge-fixed-target
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -1653,28 +1692,31 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: verifier-v2-challenge-fixed-target
+  name: verifier-challenge-fixed-target
 subjects:
   - kind: ServiceAccount
-    name: verifier-v2-challenge
+    name: verifier-challenge
     namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: verifier-v2-challenge-fixed-target
+  name: verifier-challenge-fixed-target
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: verifier-v2-challenge-code
+  name: verifier-challenge-code
 data:
+  __init__.py: ""
   broker.py: |
-{{ .Files.Get "files/verifier-v2-broker.py" | indent 4 }}
+{{ .Files.Get "files/verifier-broker.py" | indent 4 }}
+  textual.py: |
+{{ .Files.Get "files/verifier-textual.py" | indent 4 }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: verifier-v2-challenge-receipt
+  name: verifier-challenge-receipt
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
@@ -1684,18 +1726,18 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: verifier-v2-challenge
+  name: verifier-challenge
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/component: verifier-v2-challenge
+      app.kubernetes.io/component: verifier-challenge
   template:
     metadata:
       labels:
-        app.kubernetes.io/component: verifier-v2-challenge
+        app.kubernetes.io/component: verifier-challenge
     spec:
-      serviceAccountName: verifier-v2-challenge
+      serviceAccountName: verifier-challenge
       securityContext:
         runAsUser: 0
         runAsGroup: 0
@@ -1705,13 +1747,15 @@ spec:
         - name: broker
           image: {{ .Values.images.loadgen | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command: ["python3", "/opt/verifier-v2/broker.py"]
+          command: ["python3", "-m", "verifier.broker"]
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
           env:
+            - name: PYTHONPATH
+              value: /opt/verifier
             - name: TARGET_POD
               value: {{ $cfg.targetPod | quote }}
             - name: TARGET_SERVICE
@@ -1733,17 +1777,17 @@ spec:
               port: http
           volumeMounts:
             - name: code
-              mountPath: /opt/verifier-v2
+              mountPath: /opt/verifier/verifier
               readOnly: true
             - name: grader-access
               mountPath: /run/grader-access
               readOnly: true
             - name: receipt
-              mountPath: /var/run/verifier-v2
+              mountPath: /var/run/verifier
       volumes:
         - name: code
           configMap:
-            name: verifier-v2-challenge-code
+            name: verifier-challenge-code
             defaultMode: 0444
         - name: grader-access
           secret:
@@ -1751,15 +1795,15 @@ spec:
             defaultMode: 0400
         - name: receipt
           persistentVolumeClaim:
-            claimName: verifier-v2-challenge-receipt
+            claimName: verifier-challenge-receipt
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: verifier-v2-challenge
+  name: verifier-challenge
 spec:
   selector:
-    app.kubernetes.io/component: verifier-v2-challenge
+    app.kubernetes.io/component: verifier-challenge
   ports:
     - name: http
       port: 9190
@@ -1773,7 +1817,7 @@ def _apply_v2_challenge_resources(manifest: dict[str, Any], chart_dir: Path) -> 
     if contract is None or contract.challenge is None:
         return
     challenge = contract.challenge
-    from tools.verifier_v2.challenge_generation import (
+    from verifier.challenge_generation import (
         ChallengeGenerationError,
         apply_challenge_resources,
     )
@@ -1861,7 +1905,7 @@ def _generate(
     _apply_v2_challenge_resources(source_manifest, dest / "environment" / "chart")
     # 2. Write the fault/workload portion first so baseline rendering sees the
     # exact faulted chart. This file is replaced below by the complete overlay.
-    (dest / "environment" / VALUES_FILE).write_text(_render_fault_values(spec))
+    (dest / "environment" / VALUES_FILE).write_text(_render_fault_values(spec, sub))
     # 2b. prune gated payload files whose gate is off (manifest generate.prune):
     #     e.g. the F2-family fault-init script is only `.Files.Get`'d inside
     #     `if .Values.faultInit.db.enabled` blocks, so for gate-off tasks it is
@@ -1881,12 +1925,17 @@ def _generate(
     # before it ships: the first description containing a double quote emitted
     # invalid TOML that no static gate caught and every calibrate cell of
     # 04-redis-cache-oom died on at boot (run 32316976695).
-    rendered_toml = _render_task_toml(spec, sub, agent_surface)
+    rendered_toml = _render_task_toml(spec, sub, agent_surface, lock)
     try:
         tomllib.loads(rendered_toml)
     except tomllib.TOMLDecodeError as exc:
         _die(f"{spec['id']}: generated task.toml does not parse: {exc}")
     (dest / "task.toml").write_text(rendered_toml)
+    if "oddish_agent_egress_allowed_hosts" in rendered_toml:
+        # Oddish reads the agent's runtime egress allowlist from this values key.
+        (dest / "environment" / "chart" / ".oddish-agent-egress-hosts").write_text(
+            "agentEgressProxy.runtimeAllowedHosts\n"
+        )
     # 4. agent prompt + answer key (verbatim, except health_ref threshold
     #    resolution — see _emit_ground_truth)
     shutil.copyfile(spec_dir / "instruction.md", dest / "instruction.md")
@@ -1901,7 +1950,7 @@ def _generate(
     grading = _grader_settings_and_baseline(dest, manifest, sub)
     (dest / "environment" / VALUES_FILE).write_text(
         _render_task_values(
-            _fault_overlay_values(spec),
+            _fault_overlay_values(spec, sub),
             _surface_overlay_values(spec, agent_surface),
             grading,
             _registry_values(sub, lock, spec_dir),
@@ -1942,7 +1991,7 @@ def _generate(
     if not uses_v2_oracle and extension_count > 1:
         _die("a v1 task cannot select multiple oracle extensions")
     if uses_v2_oracle:
-        oracle_module = "verifier_v2.evaluate"
+        oracle_module = "verifier.evaluate"
     elif uses_p1_oracle:
         oracle_module = "oracle_p1.evaluate"
     elif uses_temporal_oracle:
@@ -1977,17 +2026,17 @@ def _generate(
             dest / "tests" / "oracle" / "source_attestation.py",
         )
     if uses_v2_oracle:
-        from tools.verifier_v2.closure import (
+        from verifier.closure import (
             selected_external_sources,
             selected_source_relpaths,
         )
 
-        v2_source = REPO_ROOT / "tools" / "verifier_v2"
-        v2_dest = dest / "tests" / "verifier_v2"
+        v2_source = REPO_ROOT / "verifier"
+        v2_dest = dest / "tests" / "verifier"
         for relpath in selected_source_relpaths(v2_contract):
             source = v2_source / relpath
             if not source.is_file():
-                _die(f"selected verifier-v2 source is missing: {source}")
+                _die(f"selected verifier source is missing: {source}")
             target = v2_dest / relpath
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
@@ -2413,7 +2462,7 @@ def _index_entry(sub: Substrate, spec_dir: Path) -> dict[str, Any]:
     )
     sizing = sub.resources("hosted")
     merged = yaml.safe_load((sub.chart_dir / "values.yaml").read_text()) or {}
-    assemble.merge_values(merged, _fault_overlay_values(spec))
+    assemble.merge_values(merged, _fault_overlay_values(spec, sub))
     return {
         "id": spec["id"],
         "slug": substrate_mod.scenario_slug(spec_dir),

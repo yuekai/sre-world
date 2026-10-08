@@ -1,3 +1,3 @@
-Message writes become slow during a recurring peak, then recover. Work out what is actually causing it, make the narrowest durable repair you can, and make sure message delivery and routine maintenance both stay healthy through a sustained recovery period.
+Message writes slow down during each recurring peak, then recover on their own. Track down the pattern and fix it without disabling routine maintenance. Message delivery and maintenance both need to stay healthy when the next peak arrives.
 
-Once you trust the fix, file one report with `submit_incident_report`. Check `submit_incident_report --help` first, use its canonical service and component vocabulary, and describe the causal chain rather than only the symptom. The first report is final.
+When you trust the fix, run `declare_repair_complete` to hand the system back — that ends your session, so leave nothing half-applied. Writing up what you found with `submit_incident_report` is optional and does not end the session; if you do, describe the causal chain more than the symptom.

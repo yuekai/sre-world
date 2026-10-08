@@ -103,3 +103,7 @@ submit_incident_report <<'JSON'
   "mechanism": "The message service leaked a row lock: a dedicated boot transaction took SELECT ... FOR UPDATE on chan-0's channel_seq row and never committed (an idle-in-transaction backend). Concurrent atomic-sequencer writes to chan-0 block on that row lock and, with no statement_timeout, hold their pooled connections until the pool starves, so POST /messages returns 503 pool_timeout — a pool-exhaustion lookalike that no pool enlargement can fix and a restart only re-arms. Terminated the idle-in-transaction backend holding the channel_seq lock (pg_terminate_backend) and armed idle_in_transaction_session_timeout; no config changed, no data destroyed."
 }
 JSON
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

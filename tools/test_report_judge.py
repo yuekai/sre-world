@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from tools.report_judge import CommandReportJudgeProvider, qualify_report
-from tools.verifier_v2.errors import EvidenceError
+from verifier.errors import EvidenceError
 
 
 def _rundir(tmp_path: Path) -> tuple[Path, dict[str, str]]:

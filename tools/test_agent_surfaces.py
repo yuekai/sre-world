@@ -1242,15 +1242,15 @@ def test_p1_task_stamp_selects_only_the_opt_in_oracle(
     verification = manifest.get("verification") if isinstance(manifest, dict) else None
     test_sh = (dest / "tests/test.sh").read_text()
     if isinstance(verification, dict) and verification.get("version") == 2:
-        assert "python3 -m verifier_v2.evaluate" in test_sh
-        assert (dest / "tests/verifier_v2/evaluate.py").is_file()
+        assert "python3 -m verifier.evaluate" in test_sh
+        assert (dest / "tests/verifier/evaluate.py").is_file()
         assert not (dest / "tests/oracle_p1").exists()
     else:
         assert "python3 -m oracle_p1.evaluate" in test_sh
         assert (dest / "tests/oracle_p1/evaluate.py").is_file()
         assert (dest / "tests/oracle_p1/runtime_state.py").is_file()
         assert (dest / "tests/oracle_p1/intervention_state.py").is_file()
-        assert not (dest / "tests/verifier_v2").exists()
+        assert not (dest / "tests/verifier").exists()
 
 
 def test_task_generation_ignores_host_python_bytecode_in_chart_copy(

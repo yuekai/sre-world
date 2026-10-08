@@ -1,3 +1,6 @@
+# RECONSTRUCTED 2026-10: values below were brought in line with the Incident
+# Arena task generated from this scenario (tools/arena_backport.py). Comments
+# may still describe the 2026-09-19 version of the fault.
 # Scenario authoring spec — consumed by tools/generate_tasks.py to emit the
 # committed Harbor task at tasks/frappe/03-U1-user-conn-cap/.
 #
@@ -14,16 +17,8 @@ title: "Desk 500s under load AND every background job submission failing: two in
 
 task:
   name: "sre-world/frappe-07-desk-queue-oom"
-  description: >-
-    Frappe ERP framework deployed as a Helm chart on an ephemeral k8s cluster
-    (upstream frappe/helm@v8.0.65 + SRE-World overlays). COMPOUND incident with
-    two independent root causes that must BOTH be found, repaired and reported:
-    a MariaDB per-account connection ceiling that refuses the application's
-    database account under cyclical Desk-API load, and a redis-queue memory cap
-    (maxmemory below the server's idle footprint, noeviction policy) that makes
-    every background job enqueue fail with OOM. Repairing one and declaring fails the outcome soak on the
-    other; naming one fails set attribution as "missing". Operator-shell agent;
-    out-of-band loadgen; dual-gate oracle (outcome + set attribution + minimality).
+  description: >
+    Frappe ERP framework deployed as a Helm chart on an ephemeral k8s cluster (upstream frappe/helm@v8.0.65 + SRE-World overlays). COMPOUND incident with two independent root causes that must BOTH be found, repaired and reported: a MariaDB per-account connection ceiling that refuses the application's database account under cyclical Desk-API load, and a bounded redis-queue memory cap under noeviction. Early jobs are accepted before retained queue state fills the cap and later writes fail loudly with OOM. Repairing one and declaring fails the outcome soak on the other; naming one fails set attribution as "missing". Operator-shell agent; out-of-band loadgen; deterministic verifier (outcome bands + repair scope).
   scenario: "frappe/07-desk-and-queue-oom"
   slice: "1"
   metadata:
@@ -39,14 +34,14 @@ task:
     # Reuse the shipped profile. Adding one would edit loadgen_frappe/
     # profiles.yaml, move base_fingerprint, and force recalibration of EVERY
     # frappe task — a cost this scenario has no reason to impose.
-    profile: "frappe_dev_agent"
+    profile: "frappe_jobs_agent"
     # Sibling value (06-queue-*, 03-QE1). Must fit INSIDE frappe_db_agent's
     # 3030s declare window together with readiness and setup — see the
     # profilesYaml note under difficulty.values.loadgen.
-    agent_timeout_sec: 1800
+    agent_timeout_sec: 3930.0
     # Covers the residual episode after the agent phase: precedent 06-F4 uses
     # declare_deadline + 390 (4590 -> 4980); 06-F3 uses +270. 3030 + 390.
-    verifier_timeout_sec: 3420
+    verifier_timeout_sec: 4770.0
     helm_timeout: "1800s"
     ready_timeout_sec: 900
     # Publish the exact service/component spellings without revealing which
@@ -54,6 +49,10 @@ task:
     # otherwise discoverable from the cluster.
     report_vocabulary: true
 
+    agent_window_s: 3600.0
+    soak_s: 180.0
+    build_timeout_sec: 3600.0
+    healthcheck_retries: 260
 substrate: "frappe"
 
 # Tier-3 (runtime): a post-site mutation of LIVE server state, not a chart knob.
@@ -134,15 +133,9 @@ difficulty:
       # undeclared floor keeps the non-declaring nop leg fast.
       profilesYaml: |
         profiles:
-          frappe_dev_agent:
-            base: frappe_dev
-            warmup_rps: 1.0
-            cycles:
-              - [20.0, 5.0, 40.0, 1.0]
-            soak_cycles: 2
+          frappe_jobs_agent:
+            base: frappe_jobs
             loop: true
-            declare_deadline_s: 3030.0
-            undeclared_evidence_min_s: 150.0
     erpnext:
       # MariaDB refuses SET GLOBAL max_user_connections when the server was
       # started with 0 (its default): ERROR 1290 "server is running with the
@@ -165,10 +158,14 @@ difficulty:
         master:
           extraFlags:
           - --maxmemory
-          - 512kb
+          - 2mb
+          - --maxmemory-policy
+          - noeviction
+          persistence:
+            enabled: true
       worker:
         default: {replicaCount: 0}
         short: {replicaCount: 0}
-        long: {replicaCount: 0}
+        long: {replicaCount: 1, supervise: true, resources: {requests: {cpu: 250m}, limits: {cpu: 1000m}}}
         scheduler: {replicaCount: 0}
       socketio: {replicaCount: 0}

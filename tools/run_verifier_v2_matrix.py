@@ -36,8 +36,8 @@ from tools.report_judge import (
     qualify_report,
 )
 from tools.validate_trial_capture import validate as validate_trial_capture
-from tools.verifier_v2.contract import load_contract
-from tools.verifier_v2.errors import VerifierV2Error
+from verifier.contract import load_contract
+from verifier.errors import VerifierV2Error
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STANDARD_CASES = (
@@ -59,7 +59,7 @@ PASS_CASES = frozenset(
 )
 FAIL_CASES = frozenset(set(STANDARD_CASES) - PASS_CASES)
 VERIFIER_MODES = ("task-shipped", "host-v2")
-_V2_HOST_IMPORT = "tools.verifier_v2.host:SlackSpineV2Verifier"
+_V2_HOST_IMPORT = "verifier.host:SlackSpineV2Verifier"
 _SLACK_SPINE_KIND_CONFIG = (
     REPO_ROOT / "substrates" / "slack-spine" / "checks" / "kind_surface_config.yaml"
 )

@@ -973,7 +973,7 @@ def test_v2_temporal_source_selection_is_exact(
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "add v2 temporal consumer")
     _write(
-        repo / "tools/verifier_v2/providers/worker_policy_survivor.py",
+        repo / "verifier/providers/worker_policy_survivor.py",
         "def evaluate_worker_policy_survivor(): return True\n",
     )
     monkeypatch.setattr(

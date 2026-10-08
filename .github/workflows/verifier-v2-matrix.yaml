@@ -145,7 +145,7 @@ jobs:
 
           import yaml
 
-          from tools.verifier_v2.contract import load_contract
+          from verifier.contract import load_contract
 
           ground_truth = (
               Path("tasks")

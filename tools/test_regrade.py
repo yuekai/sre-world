@@ -15,12 +15,12 @@ def _restore_evaluator_imports():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name in {"oracle", "verifier_v2"}
+        if name in {"oracle", "verifier"}
         or name.startswith(("oracle.", "verifier_v2."))
     }
     yield
     for name in tuple(sys.modules):
-        if name in {"oracle", "verifier_v2"} or name.startswith(
+        if name in {"oracle", "verifier"} or name.startswith(
             ("oracle.", "verifier_v2.")
         ):
             del sys.modules[name]
@@ -36,7 +36,7 @@ def _task_evaluator(root: Path, name: str, *, version: int, marker: str) -> Path
     package = "oracle"
     if version == 2:
         manifest["verification"] = {"version": 2}
-        package = "verifier_v2"
+        package = "verifier"
     gt = chart / "ground-truth.yaml"
     gt.write_text(yaml.safe_dump(manifest))
     evaluator = task / "tests" / package
@@ -61,7 +61,7 @@ def test_load_shipped_evaluator_is_task_scoped(
 
     assert first(None, manifest_path=first_gt)["marker"] == "first"
     assert second(None, manifest_path=second_gt)["marker"] == "second"
-    assert name == ("verifier_v2.evaluate" if version == 2 else "oracle.evaluate")
+    assert name == ("verifier.evaluate" if version == 2 else "oracle.evaluate")
 
 
 def test_verifier_v2_source_fallback_uses_tools_package(tmp_path: Path) -> None:
@@ -77,7 +77,7 @@ def test_verifier_v2_source_fallback_uses_tools_package(tmp_path: Path) -> None:
     evaluator, name = regrade._load_shipped_evaluator(temporary)
 
     assert callable(evaluator)
-    assert name == "verifier_v2.evaluate"
+    assert name == "verifier.evaluate"
     assert Path(evaluator.__code__.co_filename).resolve().is_relative_to(
-        regrade.REPO_ROOT / "tools" / "verifier_v2"
+        regrade.REPO_ROOT / "verifier"
     )

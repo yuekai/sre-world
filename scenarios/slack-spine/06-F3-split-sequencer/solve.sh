@@ -129,7 +129,7 @@ psql "$DB_ADMIN_DSN" -c \
   "SELECT channel_id, seq, count(*) AS n FROM messages GROUP BY channel_id, seq HAVING count(*) > 1 ORDER BY channel_id, seq;"
 echo
 
-# 4) File the incident report (this signals resolution; a soak follows). Attribute to the
+# 4) File the incident report (advisory; declare_repair_complete below ends the episode). Attribute to the
 #    send-path component that OWNS the cause (message / message.sequencer) — NOT search or
 #    the db where the duplicate-seq symptom merely surfaces.
 submit_incident_report --help >/dev/null
@@ -142,3 +142,7 @@ submit_incident_report <<'JSON'
 JSON
 
 echo "[solve] incident report filed; atomic replacement ready, duplicate seq reconciled, channel cursors realigned."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

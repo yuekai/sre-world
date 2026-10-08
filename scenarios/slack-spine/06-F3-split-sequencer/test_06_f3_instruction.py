@@ -17,10 +17,10 @@ sys.path.insert(0, str(REPO_ROOT / "loadgen-common"))
 from loadgen.schedule import PROFILES, load_profiles
 from tools.run_verifier_v2_matrix import load_matrix
 from tools import generate_tasks
-from tools.verifier_v2.contract import load_contract
-from tools.verifier_v2.evaluate import _evaluate_safe_repair
-from tools.verifier_v2.evidence import EvidenceStore
-from tools.verifier_v2.sequence_survivor import _outbox_effect_matches
+from verifier.contract import load_contract
+from verifier.evaluate import _evaluate_safe_repair
+from verifier.evidence import EvidenceStore
+from verifier.sequence_survivor import _outbox_effect_matches
 
 
 ROOT = Path(__file__).resolve().parent
@@ -28,7 +28,7 @@ CASES_DIR = ROOT / "qualification/cases"
 INSTRUCTION = ROOT / "instruction.md"
 GROUND_TRUTH = ROOT / "ground-truth.yaml"
 SPEC = ROOT / "spec.yaml"
-PHASE_ZERO_CONTRACT = REPO_ROOT / "tools/verifier_v2/contracts/06-F3-split-sequencer.yaml"
+PHASE_ZERO_CONTRACT = REPO_ROOT / "verifier/contracts/06-F3-split-sequencer.yaml"
 TASK_INDEX = REPO_ROOT / "tasks/INDEX.json"
 GENERATED_GROUND_TRUTH = (
     REPO_ROOT

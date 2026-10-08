@@ -1,3 +1,3 @@
-The message delivery path has been flaky during concurrent sends even though traffic looks normal. Work out what is actually causing it, make the narrowest durable repair you can, and make sure message delivery and ordering remain correct without losing accepted work after one restart and through a sustained recovery period.
+Normal traffic looks fine, but concurrent sends keep making message delivery unreliable. Track down the problem and fix it without losing any accepted messages or changing their order. Make sure the repair survives a message-service restart and stays healthy while traffic continues.
 
-Once you trust the fix, file one report with `submit_incident_report`. Check `submit_incident_report --help` first, use its canonical service and component vocabulary, and describe the causal chain rather than only the symptom. The first report is final.
+When you trust the fix, run `declare_repair_complete` to hand the system back — that ends your session, so leave nothing half-applied. Writing up what you found with `submit_incident_report` is optional and does not end the session; if you do, describe the causal chain more than the symptom.

@@ -69,7 +69,7 @@ printf 200
     ("oracle_module", "expected_reward"),
     [
         (
-            "verifier_v2.evaluate",
+            "verifier.evaluate",
             {"outcome": 0.0, "reward": 0.0, "safe_repair": 0.0},
         ),
         (
@@ -145,13 +145,13 @@ esac
     )
     curl.chmod(0o755)
 
-    package = tmp_path / ("verifier_v2" if challenge else "oracle")
+    package = tmp_path / ("verifier" if challenge else "oracle")
     package.mkdir()
     (package / "__init__.py").write_text("")
     module = package / ("challenge.py" if challenge else "evaluate.py")
     module.write_text("raise SystemExit(23)\n")
 
-    oracle_module = "verifier_v2.evaluate" if challenge else "oracle.evaluate"
+    oracle_module = "verifier.evaluate" if challenge else "oracle.evaluate"
     script = _render_test_sh(600, "http://loadgen:9100", oracle_module)
     script = script.replace("/logs/verifier", str(logs))
     script = script.replace("/tests/.terminal-reward.", f"{tmp_path}/.terminal-reward.")
@@ -210,7 +210,7 @@ def test_post_bundle_terminal_failures_write_zero_and_preserve_failure(
 
 def test_rendered_transport_has_no_unresolved_zero_reward_placeholder() -> None:
     for oracle_module in (
-        "verifier_v2.evaluate",
+        "verifier.evaluate",
         "oracle_p1.evaluate",
         "oracle.evaluate",
     ):

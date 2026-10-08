@@ -29,7 +29,7 @@ def _selected_evaluator(task: Path) -> Path:
     version = verification.get("version")
     assert version in {1, 2}, ground_truth_path
     if version == 2:
-        return task / "tests/verifier_v2/evaluate.py"
+        return task / "tests/verifier/evaluate.py"
     return task / "tests/oracle/evaluate.py"
 
 
@@ -48,7 +48,7 @@ def test_selected_evaluator_follows_the_task_contract(tmp_path: Path) -> None:
     assert _selected_evaluator(tmp_path) == tmp_path / "tests/oracle/evaluate.py"
 
     ground_truth.write_text("verification:\n  version: 2\n", encoding="utf-8")
-    assert _selected_evaluator(tmp_path) == tmp_path / "tests/verifier_v2/evaluate.py"
+    assert _selected_evaluator(tmp_path) == tmp_path / "tests/verifier/evaluate.py"
 
 
 def test_every_indexed_task_has_the_committed_runtime_contract() -> None:

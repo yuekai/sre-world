@@ -297,7 +297,7 @@ def test_host_v2_mode_adds_trusted_adapter_without_image_overrides(
         substrate="slack-spine",
     )
     index = command.index("--verifier-import-path")
-    assert command[index + 1] == "tools.verifier_v2.host:SlackSpineV2Verifier"
+    assert command[index + 1] == "verifier.host:SlackSpineV2Verifier"
     assert "--ek" not in command
     assert str(Path(__file__).resolve().parent.parent) in env["PYTHONPATH"]
     assert "substrates/slack-spine/verifier" in env["PYTHONPATH"]
@@ -329,7 +329,7 @@ def test_host_v2_mode_resolves_vendored_oracle_from_clean_cwd(
             (
                 "from pathlib import Path; "
                 "from types import SimpleNamespace; "
-                "from tools.verifier_v2.host import SlackSpineV2Verifier; "
+                "from verifier.host import SlackSpineV2Verifier; "
                 "verifier = object.__new__(SlackSpineV2Verifier); "
                 "verifier.environment = SimpleNamespace("
                 "_chart_path='chart', "
@@ -600,7 +600,7 @@ def test_local_run_uses_trusted_slack_kind_environment(
     environment_index = command.index("-e")
     assert command[environment_index + 1].endswith(":SlackSpineKindHelmEnvironment")
     assert command[command.index("--verifier-import-path") + 1] == (
-        "tools.verifier_v2.host:SlackSpineV2Verifier"
+        "verifier.host:SlackSpineV2Verifier"
     )
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(local_run.REPO_ROOT)
 
@@ -814,7 +814,7 @@ def test_offline_regrade_compares_fresh_detailed_verdict(
                 _restore_matrix_artifacts(regrade_dir, rundir),
                 drifted,
             )[1],
-            "verifier_v2.evaluate",
+            "verifier.evaluate",
         ),
     )
 
@@ -884,7 +884,7 @@ def test_offline_regrade_uses_copy_and_preserves_captured_artifacts(
     monkeypatch.setattr(
         matrix_module,
         "_load_shipped_evaluator",
-        lambda _gt: (fake_evaluate, "verifier_v2.evaluate"),
+        lambda _gt: (fake_evaluate, "verifier.evaluate"),
     )
 
     _validate_case_artifacts(
@@ -940,7 +940,7 @@ def test_offline_regrade_rejects_regenerated_artifact_drift_without_mutating_cap
     monkeypatch.setattr(
         matrix_module,
         "_load_shipped_evaluator",
-        lambda _gt: (drift, "verifier_v2.evaluate"),
+        lambda _gt: (drift, "verifier.evaluate"),
     )
 
     with pytest.raises(SystemExit, match=f"regenerated {artifact} does not equal"):
@@ -982,7 +982,7 @@ def test_offline_regrade_rejects_missing_regenerated_artifact(
     monkeypatch.setattr(
         matrix_module,
         "_load_shipped_evaluator",
-        lambda _gt: (omit_assessment, "verifier_v2.evaluate"),
+        lambda _gt: (omit_assessment, "verifier.evaluate"),
     )
 
     with pytest.raises(SystemExit, match="did not regenerate required artifact"):

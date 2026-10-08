@@ -26,8 +26,6 @@ kind_surface_inputs:
 - loadgen-common
 - verifier
 - tools/generate_tasks.py
-- tools/saleor_verifier_v2.py
-- tools/verifier_v2
 - tools/test_agent_surfaces.py
 
 qualification:
@@ -40,7 +38,7 @@ chart:
 images:
   registry: ghcr.io/abundant-ai/sre-world
   # Replaced by the trusted release-candidate workflow before task generation.
-  release: v6
+  release: rc-saleor-spine-v9-d2cd71f7f59b
   custom:
     main: saleor-main
     loadgen: saleor-loadgen
@@ -67,6 +65,9 @@ harbor:
   main_container: "main"
   hosted_launcher: k3s
   agent_setup_egress_boundary: true
+  # Seconds the declaration deadline extends past the agent window (reconstructed
+  # from the Incident Arena tasks).
+  declare_grace_s: 50
   episode_ready_command: "/usr/local/bin/check_episode_ready"
   healthcheck:
     command: "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"query\":\"{ shop { name } }\"}' http://svc-saleor-api:8000/graphql/ | grep -q '\"name\"' || exit 1"

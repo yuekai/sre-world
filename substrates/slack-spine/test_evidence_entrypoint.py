@@ -10,13 +10,13 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parent
-    / "chart/files/verifier-v2-evidence-entrypoint.py"
+    / "chart/files/verifier-evidence-entrypoint.py"
 )
 
 
 @pytest.fixture
 def entrypoint():
-    spec = importlib.util.spec_from_file_location("verifier_v2_evidence_entrypoint", SCRIPT)
+    spec = importlib.util.spec_from_file_location("verifier_evidence_entrypoint", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

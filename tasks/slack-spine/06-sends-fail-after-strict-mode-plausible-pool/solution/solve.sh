@@ -25,8 +25,8 @@
 #
 # BOTH must be repaired. Clearing A alone restores a healthy-LOOKING send band and
 # is exactly the half-fix this task is built to catch: the pool floors in
-# repair_scope fail on the spot, and the same event fires AGAIN 60 s after the
-# declaration, collapsing the graded soak.
+# repair_scope fail directly at declaration and soak end. Leaving A active is
+# independently rejected by protected /admin/event snapshots at both boundaries.
 #
 # TIMING — A is TIMED, so the golden must OBSERVE it before it can repair it. The
 # push lands at t=40 s and the oracle starts at t~0, so a PUT issued straight away
@@ -107,3 +107,7 @@ submit_incident_report <<'JSON'
 JSON
 
 echo "[solve] incident report filed; runtime toggle reverted, channel pool restored."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

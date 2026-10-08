@@ -53,7 +53,50 @@ class Allowed:
     reason: str
 
 
-ALLOWED_DIFFERENCES: list[Allowed] = []
+ALLOWED_DIFFERENCES: list[Allowed] = [
+    Allowed(
+        tasks=frozenset({"000", "001", "002", "003", "004", "006", "007", "009", "010", "011", "012", "013"}),
+        paths=frozenset(
+            {
+                "tests/verifier/closure.py",
+                "tests/verifier/contract.py",
+                "tests/verifier/providers/redis_state.py",
+            }
+        ),
+        reason=(
+            "Stamped before the verifier gained the service_identity materializer and "
+            "redis_state's accepted-email check (first seen in task 005); this repo ships "
+            "the superset, which is additive for these tasks."
+        ),
+    ),
+    Allowed(
+        tasks=frozenset({"008", "014", "015", "016", "017", "018", "019"}),
+        paths=frozenset(
+            {
+                "tests/verifier/challenge.py",
+                "tests/verifier/challenge_types.py",
+                "tests/verifier/checks.py",
+                "tests/verifier/closure.py",
+                "tests/verifier/contract.py",
+                "environment/chart/templates/obs.yaml",
+                "environment/chart/files/verifier-evidence-entrypoint.py",
+            }
+        ),
+        reason=(
+            "Stamped from an older generator snapshot (deadline-freeze receipt normalized "
+            "differently, fewer challenge profiles, older obs NetworkPolicies and evidence "
+            "entrypoint); this repo reproduces the newest snapshot (tasks 007, 009-013)."
+        ),
+    ),
+    Allowed(
+        tasks=frozenset({"07-writes-and-queue-oom"}),
+        paths=frozenset({"tests/verifier/challenge_types.py"}),
+        reason=(
+            "Task 005 was cut from a branch that predates the shared-store challenge "
+            "profiles; the newest challenge_types.py is a superset."
+        ),
+    ),
+]
 
 
 @dataclass

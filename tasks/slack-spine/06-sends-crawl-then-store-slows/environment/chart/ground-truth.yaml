@@ -89,9 +89,8 @@ ground_truth_set:
   # path (rule 1): the pool is found in `GET /admin/config` on svc-channel, C is found in
   # `GET /admin/event` on svc-AUTH or in svc-auth's own latency series. It is quiet while
   # A+B are unrepaired — a send path returning 503s is not measuring +250 ms — and becomes
-  # the binding cost the moment they are fixed: 583 ms (A active via the re-trigger, pool
-  # healthy) + 250 ms ~= 833 ms against the 700 ms band. It never auto-reverts and is not
-  # re-triggered, so an agent who leaves it armed pays it through the whole graded soak.
+  # visible the moment they are fixed. It never auto-reverts, so the protected challenge
+  # can prove directly whether an agent left it armed after the graded soak.
   - service: redis
     component: redis.cache-policy
     mechanism: >-
@@ -122,51 +121,25 @@ minimality:
   max_unrelated_mutations: 0
 
 thresholds:
-  # PROVISIONAL: this compound has no fence of its own; the bands are absolute
-  # two-cycle limits and difficulty is measured by oracle / nop / half-fix witnesses
-  # and agent trials.
+  # PROVISIONAL: this compound has no fence of its own. These remain the authored
+  # generic SLI bands and receive the repository-wide tolerance centrally.
   provisional: true
   latency_percentile: 90
-  # 700, AND IT IS THE ONE NUMBER THIS TASK DOES NOT INHERIT. The two shipped siblings
-  # ship 800. Here the band must separate three states, not two, and the third one is
-  # only 250 ms wide:
-  #
-  #   state (during the graded soak)                            measured / arithmetic
-  #   A cleared, pool 20/10, C cleared  = THE GOLDEN            547 / 583 / 585 (three runs)
-  #   A cleared, pool 20/10, C LEFT ARMED = the A+B half-fix    ~833  (583 + 250)
-  #   nothing repaired                  = the nop              10420 / 8893, error 1.0
-  #
-  # Sources: #386 run 33099873374 (584 / 585, event ON + healthy pool), PR #411 run
-  # 33116522704 golden (547.3 / 552.4), PR #417 run 33121660460 golden (583.0 / 557.0);
-  # nop numbers PR #405 run 33112523192 / #411 run 33116522704. The +250 ms for C is the
-  # measured per-operation cost of a 250 ms strict-store hold (PR #408's probe; PR #417's
-  # send lane moved +503 ms for exactly two such holds), applied to the ONE hold the send
-  # path pays here (auth /validate).
-  #
-  # At 800 the half-fix would fail by 4% — INSIDE the golden's own run-to-run spread of
-  # ~7%, a verdict consistent with both "the C leg binds" and "the runner was noisy",
-  # which carries no information (R23a). 700 gives the golden ~20% headroom over the
-  # worst golden ever measured on this regime (585) and fails the half-fix by ~19% —
-  # symmetric, and the reason the number moved.
-  #
-  # PRE-REGISTERED: if this task's own golden exceeds 700, the BAND is wrong and that is
-  # reported — it is not widened toward the half-fix, because a band that admits 833 ms
-  # makes the C leg decorative (R22).
+  # The centrally tolerated latency ceiling can admit the measured A+B half-fix.
+  # That is intentional: direct protected state checks, not task-local SLI tuning,
+  # now discriminate both runtime-event legs.
   p99_ms_by_phase: {peak: 700, trough: 700}
   # TIGHTENED from #385's 0.1 / 0.8. Measured healthy AND measured event-only are
   # 0.0 / 1.0; the unrepaired latent pool is 1.0 / 0.0. C errors NOTHING — the store
   # hold is a setTimeout, not a pooled connection (measured 0.0 / 1.0 in every cell of
   # PR #408's probe and PR #417's fence) — so these floors are silent on C by
-  # construction and the aggregate latency band is what grades it.
+  # construction and protected state is what proves its repair.
   error_rate_max: 0.05
   goodput_min_ratio: 0.90
   # Drop the first 30 s of the soak from the LATENCY window: the golden's
-  # `restart-svc.sh channel` reload and its three /admin/event PUTs land at declaration
-  # and their transient is not a fault symptom (13-P1's precedent; the `write` profile ships soak_cycles=2 for
-  # exactly this). The declare+60 s re-trigger lands on the far side of it, so the
-  # settle window and the re-fire never overlap. error_rate / goodput are NOT
-  # settled — they grade the full soak, which is what makes an unrepaired pool fail
-  # on ~half the graded window rather than on latency alone.
+  # `restart-svc.sh channel` reload and event PUTs land at declaration and their
+  # transient is not a fault symptom (13-P1's precedent; the `write` profile ships
+  # soak_cycles=2 for exactly this). error_rate / goodput are NOT settled.
   latency_settle_s: 30
   # NOT waived: neither defect takes the data plane down in a way a restart repairs,
   # so a restart without a persisted config diff is restart-masking. The audit's
@@ -186,9 +159,8 @@ soak_cycles: 2
 verification:
   version: 2
   materializers:
-  - incident_report
   - repair_scope
-  - legacy_outcome
+  - outcome
   - traffic_reconciliation
   public_requirements:
   - id: CP-OUT-1
@@ -197,6 +169,8 @@ verification:
     text: Channel-path capacity and delay remain inside the existing safe envelope, and protected PostgreSQL resource, timeout, durability, and maintenance guardrails remain intact.
   - id: CP-CAP-1
     text: Channel-path connection capacity is restored to at least the working level its peer roles run at, and is still there at the end of the sustained recovery period.
+  - id: CP-EVENT-1
+    text: The channel membership consistency event is inactive in verifier-owned state after the sustained recovery period.
   - id: CP-STORE-1
     text: The shared key-value store's operating policy is returned to its normal mode wherever it was changed, so no dependent service pays a per-operation hold during the sustained recovery period.
   - id: CP-DATA-1
@@ -204,45 +178,25 @@ verification:
   - id: CP-EVID-1
     text: Final verification runs behind a terminal agent boundary and its receipt is bound to the finalized evidence bundle.
   - id: CP-COMPLETE-1
-    text: One non-null report freezes the agent and starts final verification.
-  - id: C-D-1
-    text: Submit exactly one non-null incident report containing exactly 3 findings to finish and freeze the run; `submit_incident_report` is the supported interface, and the findings must name service channel and component channel.membership-acl; service channel and component channel.db-pool; service redis and component redis.cache-policy using the published vocabulary, with no extra and no missing finding. Mechanism prose is advisory.
-  completion:
-    required: true
-    requirement_ids: [CP-COMPLETE-1, C-D-1]
-    summary: A non-null report with the required canonical three-pair attribution completed and froze the run.
+    text: The agent is frozen at the end of its window and final verification runs behind that boundary.
   outcome:
     checks:
-    - id: canonical_report_shape
-      requirement_ids: [C-D-1]
-      summary: The incident report uses the canonical findings envelope with exactly 3 complete findings.
-      observe: {artifact: derived/incident-report.json, pointer: /pass}
-      assert: {op: equals, value: true}
-    - id: canonical_report_set
-      requirement_ids: [C-D-1]
-      summary: The incident report names exactly the answer-key set of (service, component) pairs — a missing pair and an extra pair both fail.
-      observe: {artifact: derived/incident-report.json, pointer: /pairs}
-      assert: {op: set_equals, value: ["channel/channel.membership-acl", "channel/channel.db-pool", "redis/redis.cache-policy"]}
-    # The check that grades leg C on OUTCOME. With A cleared and the pool restored the
-    # soak sits at ~583 ms (measured); an unrepaired C adds the auth /validate hold to
-    # every send and puts it at ~833 ms against the 700 ms band. R22: C is graded by the
-    # report pair AND by this band — there is no state check for it, because a runtime
-    # event is not an app.yaml key — so the half-fix witness on the probe branch is what
-    # proves the leg is not decorative.
+    # Generic SLI tolerance remains centralized. Runtime-event repair is proven
+    # independently below from verifier-owned post-freeze state.
     - id: sustained_latency
       requirement_ids: [CP-OUT-1, CP-STORE-1]
       summary: Peak and trough p90 message-write latency satisfy the disclosed two-cycle limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency/pass}
       assert: {op: equals, value: true}
     - id: sustained_error_rate
       requirement_ids: [CP-OUT-1]
       summary: Message-write error rate satisfies the disclosed limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/error_rate/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/error_rate/pass}
       assert: {op: equals, value: true}
     - id: sustained_correct_goodput
       requirement_ids: [CP-OUT-1]
       summary: Correct message-write goodput satisfies the disclosed floor.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/goodput/pass}
       assert: {op: equals, value: true}
     # The send lane read explicitly, so the declared per-driver band is consumed
     # rather than decorative. The write_readback driver IS the send journey
@@ -251,12 +205,12 @@ verification:
     - id: sustained_send_lane
       requirement_ids: [CP-OUT-1]
       summary: The message-send lane on its own satisfies the disclosed per-lane goodput floor and error-rate limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/by_driver/per_driver/write_readback/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/by_driver/per_driver/write_readback/pass}
       assert: {op: equals, value: true}
     - id: required_services_running
       requirement_ids: [CP-OUT-1]
       summary: Every required service is running at final collection.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
+      observe: {artifact: derived/outcome.json, pointer: /checks/services_up/value/all_running}
       assert: {op: equals, value: true}
     - id: offered_work_reconciled
       requirement_ids: [CP-OUT-1]
@@ -265,13 +219,6 @@ verification:
       assert: {op: equals, value: true}
   safe_repair:
     packs:
-    - name: correct_goodput
-      checks:
-      - id: correct_writes
-        requirement_ids: [CP-OUT-1]
-        summary: Offered writes complete with the published correct-goodput ratio.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
-        assert: {op: equals, value: true}
     - name: traffic_reconciliation
       checks:
       - id: no_suppression
@@ -284,12 +231,17 @@ verification:
         summary: Every arrival across the complete immutable traffic ledger is represented by the recorded accounting totals.
         observe: {artifact: derived/traffic-reconciliation.json, pointer: /complete_accounting}
         assert: {op: equals, value: true}
-    - name: service_health
+    - name: runtime_persistence
       checks:
-      - id: required_services_up
-        requirement_ids: [CP-OUT-1]
-        summary: Every required service remains healthy through the soak.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
+      - id: channel_consistency_event_cleared
+        requirement_ids: [CP-EVENT-1]
+        summary: Protected post-freeze state proves the channel consistency event is inactive.
+        observe: {artifact: challenge/database-survival.json, pointer: /protected_events/by_service/svc-channel/read_consistency_strict/inactive}
+        assert: {op: equals, value: true}
+      - id: auth_store_event_cleared
+        requirement_ids: [CP-STORE-1]
+        summary: Protected post-freeze state proves the auth store consistency event is inactive.
+        observe: {artifact: challenge/database-survival.json, pointer: /protected_events/by_service/svc-auth/store_consistency_strict/inactive}
         assert: {op: equals, value: true}
     - name: repair_scope
       checks:
@@ -297,7 +249,7 @@ verification:
       # These four are the second grading of defect B (fairness device 3) and the
       # deterministic half-fix witness (device 4): an agent who clears the runtime
       # toggle and declares leaves pool_size 3 / max_overflow 2 here and fails, at
-      # declaration AND at soak end, whatever the re-trigger does. A RANGE, not an
+      # declaration AND at soak end. A RANGE, not an
       # equality: any capacity from the peer working level up to the peer ceiling is
       # an acceptable repair.
       - id: channel_pool_size_floor_at_declaration
@@ -369,7 +321,7 @@ verification:
     - name: data_survival
       checks:
       # This is the challenge consumer the contract layer requires: the receipt's
-      # top-level /pass asserted true (verifier_v2/contract.py:442-455). It carries
+      # top-level /pass asserted true (verifier/contract.py:442-455). It carries
       # NO evidence list, and that is load-bearing. On the no-declaration path the
       # challenge is not run and the receipt is the `applicable: false` shape, whose
       # /pass IS present (false) but which has no /data at all. checks.py:255-311
@@ -419,9 +371,8 @@ verification:
         observe: {artifact: challenge/database-survival.json, pointer: /protected_bundle/sha256}
         assert: {op: not_empty}
     require:
-    - correct_goodput
     - traffic_reconciliation
-    - service_health
+    - runtime_persistence
     - repair_scope
     - data_survival
     - resource_ceiling
@@ -432,7 +383,7 @@ verification:
       mutations: {artifact: derived/repair-scope.json, pointer: /changed_keys}
   report_assessment: {enabled: true, judge_required: false}
   # The simplest existing challenge that restarts NOTHING: `database_survival`
-  # (tools/verifier_v2/profiles/slack_database_survival_v1.py) renders the same
+  # (verifier/profiles/slack_database_survival_v1.py) renders the same
   # private pre-agent data canary the checkpoint challenge uses
   # (challenge_generation.py:45-47 routes both through _apply_database_survivor),
   # needs no broker, and runs no pod replacement — which matters here because a
@@ -440,7 +391,7 @@ verification:
   # timeout_s MUST equal the profile's fixed 30 s (contract.py:424-431).
   challenge:
     type: database_survival
-    profile_id: slack_database_survival_v1
+    profile_id: slack_sends_crawl_store_repair_v1
     timeout_s: 30
     require_agent_frozen: true
 

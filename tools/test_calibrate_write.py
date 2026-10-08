@@ -114,10 +114,10 @@ def test_metrics_uses_selected_verifier_v2_evaluator(
     monkeypatch.setattr(
         regrade,
         "_load_shipped_evaluator",
-        lambda manifest: (evaluate, "verifier_v2.evaluate"),
+        lambda manifest: (evaluate, "verifier.evaluate"),
     )
     measured = calibrate._metrics(tmp_path, gt)
-    assert measured["evaluator"] == "verifier_v2.evaluate"
+    assert measured["evaluator"] == "verifier.evaluate"
     assert measured["gate_overall_pass"] is True
     assert measured["p_ms"] == {"peak": 10.0, "trough": 8.0}
 

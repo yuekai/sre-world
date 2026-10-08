@@ -22,16 +22,15 @@
 #   (redis.ts:19-35). Every send validates its session on svc-auth (AUTH_CHECK=1,
 #   message.ts:297-306) and pays that hold; sign-in pays it too. It is QUIET while
 #   A+B are unrepaired — a send path returning 503s is not measuring +250 ms — and
-#   it becomes the whole remaining gap once they are fixed: ~583 ms (A active via
-#   the declaration-anchored re-trigger, pool healthy) + 250 ms ~= 833 ms against a
-#   700 ms band. Repair = ONE PUT on svc-auth's /admin/event. It never auto-reverts
-#   and is not re-triggered, so leaving it armed costs the whole graded soak.
+#   it becomes the whole remaining gap once they are fixed. Repair = ONE PUT on
+#   svc-auth's /admin/event. It never auto-reverts, so the verifier-owned
+#   post-freeze state probe rejects leaving it armed even when generic SLIs pass.
 #
 # ALL THREE must be repaired and all three must be reported. Clearing A alone
 # leaves B, which the pool floors in repair_scope catch on the spot and which the
-# declaration-anchored re-trigger collapses inside the graded soak. Clearing A and
-# repairing B but leaving C is the OTHER half-fix — the one that looks healthy —
-# and it is what the probe branch measures against the 700 ms band.
+# soak-end pool snapshot checks again. Clearing A and repairing B but leaving C is
+# the OTHER half-fix — the one that can look healthy after central SLI tolerance —
+# and the protected event-state probe rejects it directly.
 #
 # TIMING — A and C are both TIMED, so the golden must OBSERVE them before it can
 # repair them. Both land at t=40 s and the oracle starts at t~0, so a PUT issued
@@ -159,3 +158,7 @@ submit_incident_report <<'JSON'
 JSON
 
 echo "[solve] incident report filed; channel toggle reverted, channel pool restored, shared-store strict mode cleared on auth."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

@@ -466,7 +466,7 @@ def test_health_ref_regrade_fails_loudly_on_unresolved_generated_manifest(
 
 @pytest.mark.parametrize(
     ("schema_version", "evaluator_name"),
-    [(1, "oracle.evaluate"), (2, "verifier_v2.evaluate")],
+    [(1, "oracle.evaluate"), (2, "verifier.evaluate")],
 )
 def test_regrade_uses_selected_shipped_evaluator(
     tmp_path: Path,

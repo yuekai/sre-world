@@ -18,15 +18,15 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from tools import generate_tasks
 from tools.run_verifier_v2_matrix import load_matrix
-from tools.verifier_v2.contract import load_contract
-from tools.verifier_v2.challenge_types import challenge_profile
-from tools.verifier_v2.evaluate import _evaluate_safe_repair
-from tools.verifier_v2.evidence import EvidenceStore
+from verifier.contract import load_contract
+from verifier.challenge_types import challenge_profile
+from verifier.evaluate import _evaluate_safe_repair
+from verifier.evidence import EvidenceStore
 
 
 SCENARIO = Path(__file__).parent
 AUTHOR_CONTRACT = (
-    REPO_ROOT / "tools/verifier_v2/contracts/13-P1-distractor-volume-shell.yaml"
+    REPO_ROOT / "verifier/contracts/13-P1-distractor-volume-shell.yaml"
 )
 
 

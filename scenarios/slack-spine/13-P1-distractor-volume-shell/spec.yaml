@@ -1,3 +1,6 @@
+# RECONSTRUCTED 2026-10: values below were brought in line with the Incident
+# Arena task generated from this scenario (tools/arena_backport.py). Comments
+# may still describe the 2026-09-19 version of the fault.
 id: 13-P1-distractor-volume-shell
 slug: distractor-volume-shell
 title: "Seeded cohort lifecycle regression under high-volume production telemetry"
@@ -36,10 +39,14 @@ task:
     report_vocabulary: true
     # Give hosted agents one full hour to diagnose, repair, restart, and gather
     # sustained-recovery evidence before returning their report.
-    agent_timeout_sec: 3600
+    agent_timeout_sec: 3930.0
     # 3630s null deadline + episode finalization + the protected 180s restart
     # challenge and fixed 15s post-ready wait.
-    verifier_timeout_sec: 4230
+    verifier_timeout_sec: 4770.0
+    agent_window_s: 3600.0
+    soak_s: 180.0
+    build_timeout_sec: 1800.0
+    healthcheck_retries: 97
 substrate: "slack-spine"
 
 difficulty:
@@ -76,4 +83,4 @@ fault:
     shared verifier; P1 values change retrieval difficulty only.
   values: {}
   layer:
-    app: null
+    app:

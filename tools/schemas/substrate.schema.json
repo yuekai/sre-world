@@ -116,6 +116,7 @@
         "hosted_launcher": { "enum": ["kind", "k3s"] },
         "agent_setup_egress_boundary": { "const": true },
         "episode_ready_command": { "type": "string", "minLength": 1 },
+        "declare_grace_s": { "type": "number", "minimum": 0 },
         "healthcheck": {
           "type": "object",
           "additionalProperties": false,

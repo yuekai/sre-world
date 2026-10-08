@@ -34,7 +34,7 @@ filter. Include this only in main and db pod specs; the filter and proxy must
 retain ClusterFirst so they can resolve their approved upstreams.
 */}}
 {{- define "slack.confinedDns" -}}
-{{- if and (include "slack.enabled" (dict "root" . "key" "main")) (not (or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled)) -}}
+{{- if include "slack.enabled" (dict "root" . "key" "main") -}}
 dnsPolicy: None
 dnsConfig:
   nameservers:

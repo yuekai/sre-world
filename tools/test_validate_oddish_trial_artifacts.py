@@ -269,7 +269,7 @@ def _final_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     gt.parent.mkdir(parents=True)
     gt.write_text("verification:\n  version: 2\n")
     (task_root / "task.toml").write_text('[metadata]\nscenario = "slack-spine/final"\n')
-    tests = task_root / "tests" / "verifier_v2"
+    tests = task_root / "tests" / "verifier"
     tests.mkdir(parents=True)
     (tests / "__init__.py").write_text("")
     (tests / "evaluate.py").write_text("# exact shipped evaluator\n")
@@ -397,14 +397,14 @@ def _patch_regrade(monkeypatch: pytest.MonkeyPatch, *, drift: bool = False) -> N
     monkeypatch.setattr(
         artifact_module,
         "_load_shipped_evaluator",
-        lambda _gt: (evaluate, "verifier_v2.evaluate"),
+        lambda _gt: (evaluate, "verifier.evaluate"),
     )
     monkeypatch.setattr(artifact_module, "_validate_task_checkout", lambda **_kwargs: None)
     monkeypatch.setattr(
         artifact_module.importlib,
         "import_module",
         lambda name: SimpleNamespace(rewards_from_verdict=rewards)
-        if name == "verifier_v2.reward"
+        if name == "verifier.reward"
         else None,
     )
 

@@ -33,3 +33,7 @@ submit_incident_report \
   --mechanism "redis-queue was started with --min-replicas-to-write 1 on a standalone master. With zero replicas the replication guard can never be satisfied, so redis refused every write with NOREPLICAS; reads and PING stayed green while every frappe.enqueue() returned 503. Set min-replicas-to-write back to 0 on svc-redis-queue via reconfigure-infra.sh; did not touch min-replicas-max-lag or the topology."
 
 echo "[solve] incident report filed (BOTH findings); per-account ceiling restored, queue write guard cleared."
+
+# End the episode. `submit_incident_report` above is advisory and does not stop
+# the clock, so this is what freezes the system and starts the graded soak.
+declare_repair_complete

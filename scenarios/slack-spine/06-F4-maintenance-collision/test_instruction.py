@@ -10,9 +10,9 @@ from harbor.trial.trial import Trial
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
-from tools.verifier_v2.contract import load_contract
-from tools.verifier_v2.evaluate import _evaluate_safe_repair
-from tools.verifier_v2.evidence import EvidenceStore
+from verifier.contract import load_contract
+from verifier.evaluate import _evaluate_safe_repair
+from verifier.evidence import EvidenceStore
 from loadgen.profile_loader import load_profiles
 from loadgen.schedule import PROFILES
 
@@ -24,7 +24,7 @@ REVIEWER = Path(__file__).with_name("REVIEWER.md")
 MATRIX = Path(__file__).with_name("qualification") / "matrix.yaml"
 CASES = MATRIX.parent / "cases"
 PHASE_ZERO = (
-    REPO_ROOT / "tools/verifier_v2/contracts/06-F4-maintenance-collision.yaml"
+    REPO_ROOT / "verifier/contracts/06-F4-maintenance-collision.yaml"
 )
 TASK_VALUES = (
     REPO_ROOT

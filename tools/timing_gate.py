@@ -315,9 +315,15 @@ class Timings:
     warmup_s: float
     cycles: tuple[tuple[float, float], ...]
     deadline_source: str
+    # Episode-start anchoring: when set, the harness signals /grader/episode-start
+    # only after readiness and agent setup, so the declaration deadline is measured
+    # from the agent's first moment and must cover exactly its window.
+    agent_window_s: float | None = None
 
     @property
     def required_declare_s(self) -> float:
+        if self.agent_window_s is not None:
+            return self.agent_window_s + self.declare_margin_s
         return (
             self.agent_timeout_s
             + self.ready_timeout_s
@@ -460,7 +466,11 @@ def resolve(
             field="verifier_timeout_sec",
             task=task,
         ),
-        declare_deadline_s=float(profile.declare_deadline_s),
+        declare_deadline_s=(
+            substrate_mod.window_declare_deadline_s(sub, float(meta["agent_window_s"]))
+            if meta.get("agent_window_s") is not None
+            else float(profile.declare_deadline_s)
+        ),
         declare_margin_s=_num(
             meta.get("declare_margin_s"), 0.0, field="declare_margin_s", task=task
         ),
@@ -478,6 +488,11 @@ def resolve(
         warmup_s=float(profile.warmup_s),
         cycles=tuple((float(c[0]), float(c[2])) for c in profile.cycles),
         deadline_source=source,
+        agent_window_s=(
+            None
+            if meta.get("agent_window_s") is None
+            else _num(meta.get("agent_window_s"), 0.0, field="agent_window_s", task=task)
+        ),
     )
 
 
@@ -576,6 +591,8 @@ def _shrink_options(t: Timings) -> str:
 
 
 def _check_a(t: Timings) -> Finding | None:
+    if t.agent_window_s is not None:
+        return _check_a_anchored(t)
     if t.declare_deadline_s >= t.required_declare_s - 1e-9:
         return None
     short = t.required_declare_s - t.declare_deadline_s
@@ -627,6 +644,32 @@ def _check_a(t: Timings) -> Finding | None:
         + _shrink_options(t)
         + "waive it: add this task to WAIVERS in tools/timing_gate.py with a "
         "reason string."
+    )
+    return Finding(t.task, "a", _severity("a"), msg)
+
+
+def _check_a_anchored(t: Timings) -> Finding | None:
+    """(a) for episode-start-anchored tasks: the deadline covers the agent window
+    and Harbor lets the agent run for at least that window."""
+    problems = []
+    if t.declare_deadline_s < t.required_declare_s - 1e-9:
+        problems.append(
+            f"declare_deadline_s={t.declare_deadline_s:g} s < agent_window_s "
+            f"{t.agent_window_s:g} + declare_margin_s {t.declare_margin_s:g}"
+        )
+    if t.agent_timeout_s < t.agent_window_s - 1e-9:
+        problems.append(
+            f"agent_timeout_sec={t.agent_timeout_s:g} s < agent_window_s "
+            f"{t.agent_window_s:g} — Harbor would stop the agent inside its window"
+        )
+    if not problems:
+        return None
+    msg = (
+        f"{t.task}: (a) the declaration window does not cover the agent window "
+        "(episode-start anchored).\n      "
+        + "\n      ".join(problems)
+        + "\n  FIX: adjust task.metadata.agent_window_s / agent_timeout_sec or the "
+        f"profile deadline:\n{_fix_field(t)}"
     )
     return Finding(t.task, "a", _severity("a"), msg)
 

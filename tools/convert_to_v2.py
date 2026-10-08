@@ -63,7 +63,7 @@ def build(gt: dict) -> dict:
         chk("no_protected_file_mutation", ["CONFIG-SCOPE-1"], "The operational repair leaves the protected on-disk configuration unchanged.", SCOPE, "/changed_keys", "set_equals", []),
         chk("no_post_declaration_config_drift", ["CONFIG-SCOPE-1"], "Protected on-disk configuration does not drift after completion.", SCOPE, "/post_declaration_drift", "empty"),
     ]})
-    mats = ["incident_report", "legacy_outcome"] + (["mariadb_state"] if has_db else []) + ["repair_scope"]
+    mats = ["incident_report", "outcome"] + (["mariadb_state"] if has_db else []) + ["repair_scope"]
     return {"version": 2, "materializers": mats, "public_requirements": req,
             "completion": {"required": True, "requirement_ids": ["COMPLETE-1"], "summary": "A non-null report with the required canonical attribution completed and froze the run."},
             "outcome": {"checks": outcome},

@@ -91,17 +91,17 @@ data:
   profiles.yaml: {{ .Values.loadgen.profilesYaml | quote }}
 ---
 {{- end }}
-{{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+{{- if .Values.gradingHarness.verifierEvidence.persistent }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: verifier-v2-evidence-entrypoint
+  name: verifier-evidence-entrypoint
   labels:
     {{- include "slack.labels" $ | nindent 4 }}
     app.kubernetes.io/component: loadgen
 data:
   entrypoint.py: |
-{{ .Files.Get "files/verifier-v2-evidence-entrypoint.py" | indent 4 }}
+{{ .Files.Get "files/verifier-evidence-entrypoint.py" | indent 4 }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -114,16 +114,19 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: {{ .Values.gradingHarness.verifierV2Evidence.size | quote }}
+      storage: {{ .Values.gradingHarness.verifierEvidence.size | quote }}
 ---
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: verifier-v2-db-survivor-code
+  name: verifier-db-survivor-code
 data:
+  __init__.py: ""
   db_survivor.py: |
-{{ .Files.Get "files/verifier-v2-db-survivor.py" | indent 4 }}
+{{ .Files.Get "files/verifier-db-survivor.py" | indent 4 }}
+  textual.py: |
+{{ .Files.Get "files/verifier-textual.py" | indent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -134,7 +137,7 @@ metadata:
     app.kubernetes.io/component: loadgen
 spec:
   replicas: 1
-  {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+  {{- if .Values.gradingHarness.verifierEvidence.persistent }}
   # Never overlap episode owners against one ReadWriteOnce evidence volume.
   strategy:
     type: Recreate
@@ -293,7 +296,7 @@ spec:
             - "-c"
             - "until curl -sf http://db-maintenance:8081/healthz; do echo waiting for db-maintenance; sleep 2; done"
         {{- end }}
-        - name: verifier-v2-db-survivor-baseline
+        - name: verifier-db-survivor-baseline
           image: {{ .Values.images.loadgen | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           command:
@@ -314,13 +317,13 @@ spec:
                 exit 1
               fi
               : > "$state.starting"
-              python3 /opt/verifier-v2/db_survivor.py --output "$output"
+              python3 -m verifier.db_survivor --output "$output"
               [ -s "$output" ] || { echo "protected data baseline capture was empty" >&2; exit 1; }
               python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$output"
               mv "$state.starting" "$state.ready"
           env:
             - name: PYTHONPATH
-              value: /opt/verifier-v2
+              value: /opt/verifier
             - name: DB_ADMIN_DSN
               value: "postgresql://{{ .Values.postgres.adminRole }}:{{ .Values.postgres.adminPassword }}@db:5432/{{ .Values.postgres.database }}"
           securityContext:
@@ -331,19 +334,19 @@ spec:
           volumeMounts:
             - name: grader
               mountPath: /grader
-            - name: verifier-v2-db-survivor-code
-              mountPath: /opt/verifier-v2
+            - name: verifier-db-survivor-code
+              mountPath: /opt/verifier/verifier
               readOnly: true
       containers:
         - name: loadgen
           image: {{ .Values.images.loadgen | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+          {{- if .Values.gradingHarness.verifierEvidence.persistent }}
           # v13 predates durable episode resume. This compatibility entrypoint
           # uses only the sidecar module already installed in that pinned image,
           # so the evidence fix is deployable without publishing a new image.
           # A future image with the native helper takes its own code path.
-          command: ["python3", "/opt/verifier-v2-evidence/entrypoint.py"]
+          command: ["python3", "/opt/verifier-evidence/entrypoint.py"]
           {{- end }}
           securityContext:
             readOnlyRootFilesystem: true
@@ -402,7 +405,7 @@ spec:
             # rebuilt from this snapshot across ALL services, not a post-soak read of
             # svc-message alone. Drives off the chart's role set so it stays in sync.
             - name: SNAPSHOT_SERVICES
-              value: {{ keys .Values.app.roles | sortAlpha | join "," | quote }}
+              value: {{ .Values.loadgen.snapshotServices | default (keys .Values.app.roles | sortAlpha | join ",") | quote }}
             {{- if .Values.loadgen.snapshotInfra }}
             - name: SNAPSHOT_INFRA
               value: {{ .Values.loadgen.snapshotInfra | quote }}
@@ -451,9 +454,9 @@ spec:
             - name: grader-access
               mountPath: /run/grader-access
               readOnly: true
-            {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
-            - name: verifier-v2-evidence-entrypoint
-              mountPath: /opt/verifier-v2-evidence
+            {{- if .Values.gradingHarness.verifierEvidence.persistent }}
+            - name: verifier-evidence-entrypoint
+              mountPath: /opt/verifier-evidence
               readOnly: true
             {{- end }}
             {{- if $authEnabled }}
@@ -481,12 +484,12 @@ spec:
           resources:
             {{- include "slack.resources" (dict "root" $ "key" "loadgen") | nindent 12 }}
       volumes:
-        - name: verifier-v2-db-survivor-code
+        - name: verifier-db-survivor-code
           configMap:
-            name: verifier-v2-db-survivor-code
+            name: verifier-db-survivor-code
             defaultMode: 0444
         - name: grader
-          {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+          {{- if .Values.gradingHarness.verifierEvidence.persistent }}
           persistentVolumeClaim:
             claimName: loadgen-grader-evidence
           {{- else }}
@@ -496,10 +499,10 @@ spec:
           secret:
             secretName: loadgen-grader-access
             defaultMode: 0444
-        {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
-        - name: verifier-v2-evidence-entrypoint
+        {{- if .Values.gradingHarness.verifierEvidence.persistent }}
+        - name: verifier-evidence-entrypoint
           configMap:
-            name: verifier-v2-evidence-entrypoint
+            name: verifier-evidence-entrypoint
             defaultMode: 0444
         {{- end }}
         {{- if $authEnabled }}

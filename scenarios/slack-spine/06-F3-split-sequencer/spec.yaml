@@ -1,3 +1,6 @@
+# RECONSTRUCTED 2026-10: values below were brought in line with the Incident
+# Arena task generated from this scenario (tools/arena_backport.py). Comments
+# may still describe the 2026-09-19 version of the fault.
 # Scenario authoring spec — consumed by `tools/generate_tasks.py` to emit the
 # self-contained Harbor task at scenarios/06-F3-split-sequencer/ (D14).
 #
@@ -88,11 +91,15 @@ task:
     #     verifier = declare + 390 post-episode collection                     = 4980
     # agent_timeout_sec must fit INSIDE declare_deadline_s (52e189129), so the budget
     # and the window move together and never one without the other.
-    agent_timeout_sec: 3600
-    verifier_timeout_sec: 4980
+    agent_timeout_sec: 3930.0
+    verifier_timeout_sec: 4770.0
 
 # The substrate this scenario faults: a name under substrates/ — the manifest
 # (substrates/<name>/substrate.yaml) supplies the chart + harbor wiring.
+    agent_window_s: 3600.0
+    soak_s: 180.0
+    build_timeout_sec: 1800.0
+    healthcheck_retries: 97
 substrate: "slack-spine"
 
 difficulty:

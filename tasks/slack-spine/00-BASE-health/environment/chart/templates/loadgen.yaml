@@ -91,17 +91,17 @@ data:
   profiles.yaml: {{ .Values.loadgen.profilesYaml | quote }}
 ---
 {{- end }}
-{{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+{{- if .Values.gradingHarness.verifierEvidence.persistent }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: verifier-v2-evidence-entrypoint
+  name: verifier-evidence-entrypoint
   labels:
     {{- include "slack.labels" $ | nindent 4 }}
     app.kubernetes.io/component: loadgen
 data:
   entrypoint.py: |
-{{ .Files.Get "files/verifier-v2-evidence-entrypoint.py" | indent 4 }}
+{{ .Files.Get "files/verifier-evidence-entrypoint.py" | indent 4 }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -114,7 +114,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: {{ .Values.gradingHarness.verifierV2Evidence.size | quote }}
+      storage: {{ .Values.gradingHarness.verifierEvidence.size | quote }}
 ---
 {{- end }}
 apiVersion: apps/v1
@@ -126,7 +126,7 @@ metadata:
     app.kubernetes.io/component: loadgen
 spec:
   replicas: 1
-  {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+  {{- if .Values.gradingHarness.verifierEvidence.persistent }}
   # Never overlap episode owners against one ReadWriteOnce evidence volume.
   strategy:
     type: Recreate
@@ -289,12 +289,12 @@ spec:
         - name: loadgen
           image: {{ .Values.images.loadgen | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+          {{- if .Values.gradingHarness.verifierEvidence.persistent }}
           # v13 predates durable episode resume. This compatibility entrypoint
           # uses only the sidecar module already installed in that pinned image,
           # so the evidence fix is deployable without publishing a new image.
           # A future image with the native helper takes its own code path.
-          command: ["python3", "/opt/verifier-v2-evidence/entrypoint.py"]
+          command: ["python3", "/opt/verifier-evidence/entrypoint.py"]
           {{- end }}
           securityContext:
             readOnlyRootFilesystem: true
@@ -353,7 +353,7 @@ spec:
             # rebuilt from this snapshot across ALL services, not a post-soak read of
             # svc-message alone. Drives off the chart's role set so it stays in sync.
             - name: SNAPSHOT_SERVICES
-              value: {{ keys .Values.app.roles | sortAlpha | join "," | quote }}
+              value: {{ .Values.loadgen.snapshotServices | default (keys .Values.app.roles | sortAlpha | join ",") | quote }}
             {{- if .Values.loadgen.snapshotInfra }}
             - name: SNAPSHOT_INFRA
               value: {{ .Values.loadgen.snapshotInfra | quote }}
@@ -402,9 +402,9 @@ spec:
             - name: grader-access
               mountPath: /run/grader-access
               readOnly: true
-            {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
-            - name: verifier-v2-evidence-entrypoint
-              mountPath: /opt/verifier-v2-evidence
+            {{- if .Values.gradingHarness.verifierEvidence.persistent }}
+            - name: verifier-evidence-entrypoint
+              mountPath: /opt/verifier-evidence
               readOnly: true
             {{- end }}
             {{- if $authEnabled }}
@@ -433,7 +433,7 @@ spec:
             {{- include "slack.resources" (dict "root" $ "key" "loadgen") | nindent 12 }}
       volumes:
         - name: grader
-          {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
+          {{- if .Values.gradingHarness.verifierEvidence.persistent }}
           persistentVolumeClaim:
             claimName: loadgen-grader-evidence
           {{- else }}
@@ -443,10 +443,10 @@ spec:
           secret:
             secretName: loadgen-grader-access
             defaultMode: 0444
-        {{- if .Values.gradingHarness.verifierV2Evidence.persistent }}
-        - name: verifier-v2-evidence-entrypoint
+        {{- if .Values.gradingHarness.verifierEvidence.persistent }}
+        - name: verifier-evidence-entrypoint
           configMap:
-            name: verifier-v2-evidence-entrypoint
+            name: verifier-evidence-entrypoint
             defaultMode: 0444
         {{- end }}
         {{- if $authEnabled }}

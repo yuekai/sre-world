@@ -67,9 +67,12 @@ capabilities:
   - mariadb.lock_state
   - mariadb.grants
   - mariadb.integrity
+  - redis.configuration
   fault_injection:
   - mariadb.runtime_global_variables
   - mariadb.runtime_grants
+  - mariadb.runtime_compound
+  - mariadb.runtime_multi_grant
 
 qualification:
   # Both prerequisites the previous blocker named are now in place:
@@ -91,7 +94,7 @@ chart:
 
 images:
   registry: ghcr.io/abundant-ai/sre-world
-  release: v21
+  release: scratch-frappe-rq-recovery-e4b415078419
   # values.images.<key> -> basename; built as <basename>:dev by build_script.
   custom:
     main: frappe-main
@@ -126,6 +129,9 @@ harbor:
   # keep their task-local topology within that worker's fixed storage budget.
   hosted_launcher: k3s
   agent_setup_egress_boundary: true
+  # Seconds the declaration deadline extends past the agent window (reconstructed
+  # from the Incident Arena tasks).
+  declare_grace_s: 90
   healthcheck:
     command: "curl -fsS svc-frappe-web:8000/api/method/ping || exit 1"
     interval_sec: 3.0

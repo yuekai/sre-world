@@ -1,4 +1,4 @@
-{{- if and (include "slack.enabled" (dict "root" $ "key" "main")) (not (or .Values.agentSurface.exec.enabled .Values.agentSurface.buildCapable.enabled)) }}
+{{- if include "slack.enabled" (dict "root" $ "key" "main") }}
 # Main can reach labelled namespace-local services, including the task-owned
 # HTTP proxy and DNS filter, but cannot connect directly to the TLS gateway.
 # It has no direct public or recursive-DNS route, including when a client

@@ -13,7 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 
-from tools.verifier_v2 import evaluate as evaluate_module
+from verifier import evaluate as evaluate_module
 
 QUALIFICATION_DIR = Path(__file__).parent
 CASES_DIR = QUALIFICATION_DIR / "cases"
@@ -347,7 +347,7 @@ def test_endpoint_bypass_is_runnable_and_rejected() -> None:
     assert "psql" not in endpoint
 
     contract = yaml.safe_load(
-        (REPO_ROOT / "tools/verifier_v2/contracts/09-I1-seq-lock-leak.yaml").read_text()
+        (REPO_ROOT / "verifier/contracts/09-I1-seq-lock-leak.yaml").read_text()
     )
     wording = contract["counterexamples"]["endpoint_bypass"]
     for phrase in (

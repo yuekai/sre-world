@@ -23,21 +23,52 @@ main:
 agentEgressProxy:
   port: 3128
   tlsGatewayPort: 15443
+  # Runtime allowlist. Oddish narrows this per trial to the single provider the
+  # selected agent actually dials (agentEgressProxy.runtimeAllowedHosts), so this
+  # static set is the direct-Helm/local fallback and the ceiling for a hosted
+  # trial: it must cover every provider we evaluate across models.
+  #
+  # Harness INSTALLERS are deliberately absent (github, npm, nodejs, the
+  # antigravity/opencode download hosts). They are fetched while the proxy is in
+  # its public bootstrap phase, and raw.githubusercontent.com must keep being
+  # DENIED here because set-agent-egress-phase proves the runtime cutover landed
+  # by requiring a stable 403 for exactly that host. Scenario-source hosts stay
+  # absent for the same anti-leak reason they always were.
   allowedHosts:
     - archive.ubuntu.com
     - security.ubuntu.com
     - downloads.claude.ai
     - api.openai.com
     - ab.chatgpt.com
-    - x.ai
-    - api.fireworks.ai
-    - api.x.ai
     - api.anthropic.com
     - mcp-proxy.anthropic.com
+    - generativelanguage.googleapis.com
+    - x.ai
+    - api.x.ai
+    - api.fireworks.ai
+    - api.deepseek.com
+    - api.z.ai
+    - api.minimax.io
+    - api.moonshot.ai
+    - openrouter.ai
+    - api.ai.meta.com
+    - api.meta.ai
+    - lookaside.facebook.com
+    - bedrock-runtime.us-east-1.amazonaws.com
+    - bedrock.us-east-1.amazonaws.com
+    - bedrock-runtime.us-west-2.amazonaws.com
+    - bedrock.us-west-2.amazonaws.com
+    - sts.amazonaws.com
+    - antigravity-unleash.goog
+    - play.googleapis.com
+    - playwright.azureedge.net
+    - playwright-akamai.azureedge.net
+    - playwright-verizon.azureedge.net
+  # Harbor temporarily switches the proxy to a public bootstrap configuration
   # Harbor temporarily switches the proxy to a public bootstrap configuration
   # only while trusted agent.setup() runs. Runtime always returns to this fixed
   # allowlist before agent.run().
-  noProxy: "localhost,127.0.0.1,.svc,.cluster.local,db,db-replica,db-maintenance,redis,redpanda,minio,loadgen,obs-mcp,agent-freezer,rebuild-broker,sequencer-config-broker,pgbouncer,search-engine,kafkagate,dispatcher,channel-rt,ws-gateway,envoy,envoy-edge,cdn,cdn-static,geodns,flannel,presence,scheduler,worker,worker-index,broker-inspector,capacity-controller,maintenance-controller,svc-auth,svc-workspace,svc-channel,svc-message,svc-thread,svc-file,svc-search,svc-notification,svc-platform"
+  noProxy: "localhost,127.0.0.1,10.43.0.1,.svc,.cluster.local,db,db-replica,db-maintenance,redis,redpanda,minio,loadgen,obs-mcp,agent-freezer,rebuild-broker,sequencer-config-broker,pgbouncer,search-engine,kafkagate,dispatcher,channel-rt,ws-gateway,envoy,envoy-edge,cdn,cdn-static,geodns,flannel,presence,scheduler,worker,worker-index,broker-inspector,capacity-controller,maintenance-controller,svc-auth,svc-workspace,svc-channel,svc-message,svc-thread,svc-file,svc-search,svc-notification,svc-platform"
 
 # Hosted k3s uses 10.43.0.0/16 for Services. Blacksmith's Kind surface check
 # pins the same service CIDR. Main and PostgreSQL use this task-owned resolver,
@@ -45,6 +76,13 @@ agentEgressProxy:
 agentDnsFilter:
   clusterIP: 10.43.0.53
   port: 5353
+
+# Platform-owned and independent of images.release. Generated hosted tasks must
+# replace this disabled staging value with one lock-derived @sha256 identity.
+platformTools:
+  enabled: false
+  image: ""
+  digest: ""
 
 images:
   # custom (built by substrate/build.sh)
@@ -60,7 +98,7 @@ images:
   postgres: postgres:16
   redis: redis:7-alpine
   redpanda: redpandadata/redpanda:v24.2.7
-  minio: minio/minio:RELEASE.2024-09-13T20-26-02Z
+  minio: ghcr.io/abundant-ai/sre-world/slack-main@sha256:7910f6ae9706a6cc4a19f8e2c78c49e0f98c0ae4728aa4045fb33221b9e6d74a
   # (no searchEngine image: the search-engine deployment runs the custom Go binary on
   #  images.go — a stock search image here would be a dead/misleading config fingerprint)
   envoy: envoyproxy/envoy:v1.31-latest
@@ -243,26 +281,6 @@ faultInit:
       chunkXids: 200000      # subtransactions per DO block (one XID each); also the age-probe granularity
       startDelaySeconds: 20  # wait after the SUT is healthy before tripping (keeps the trip mid-episode, not at t0)
 
-  # roleGuc: a post-install role-scoped Postgres setting, rendered into the
-  # bootstrap SQL as `ALTER ROLE <role> SET <name> = '<value>'` and landing in
-  # pg_db_role_setting. DEFAULT-OFF, so the healthy substrate is byte-identical.
-  #
-  # Why this shape: the setting applies at SESSION START, so it reaches every
-  # app connection opened after bootstrap and survives pod and database
-  # restarts, while appearing in NO rendered artifact and in NO config
-  # minimality basis. The healthy chart already ships one of these by hand
-  # (the app role's lock_timeout, in 10-app-role.sql), so the mechanism is
-  # production-plausible and the knob is not a greppable outlier.
-  #
-  # The allowed setting NAMES are data, owned by the substrate validator
-  # (checks/fault_validators.py::_ALLOWED_ROLE_GUCS) rather than by this file:
-  # a name Postgres does not recognise is rejected at session start, which
-  # would arm nothing and grade healthy.
-  roleGuc:
-    enabled: false
-    role: ""                 # DB role the settings attach to; must already exist
-    settings: {}             # {<guc name>: <string|int>} — rendered in sorted key order
-
 # Optional database intermediary. Disabled in the healthy substrate and enabled
 # only by scenarios that deliberately put it on the message path.
 pgbouncer:
@@ -373,6 +391,11 @@ loadgen:
   # (comma-joined logical names; e.g. "postgres" or "pgbouncer"). DEFAULT EMPTY:
   # no infra snapshot is taken and prior scenarios render byte-identically.
   snapshotInfra: ""
+  # Optional comma-separated app roles whose live /admin/config is captured at
+  # declaration for the protected minimality diff. Empty preserves the full-spine
+  # default (all app roles). Reduced-runtime tasks must set this explicitly to the
+  # enabled app roles; the task-consistency gate enforces exact agreement.
+  snapshotServices: ""
   # P3a multi-service async-tier scrape targets — comma-joined host:port entries
   # (e.g. "worker-index:8122"). DEFAULT EMPTY: the sidecar runs the unchanged
   # single-svc-message scrape, creates NO async scrape task, and writes NO
@@ -424,7 +447,7 @@ gradingHarness:
   # Verifier-v2 evidence must outlive a loadgen pod replacement. The generator
   # enables this only for verification.version=2 tasks; legacy charts retain
   # their private pod-local emptyDir.
-  verifierV2Evidence:
+  verifierEvidence:
     persistent: false
     size: 256Mi
   podState:
@@ -449,16 +472,20 @@ agentReport:
     services: []
     components: []
 
-# ── agent access surface. SECURITY-QUARANTINED: only `confined` is supported.
-#    Helm fails loudly if either historical activation gate is enabled. The values
-#    remain here so stale overlays fail deterministically while replacement trust
-#    boundaries are implemented.
+# ── agent access surface. Non-confined capabilities stay release-gated, and all
+#    surfaces share the same runtime egress boundary. Exact exec RBAC is paired
+#    with task-pod egress confinement so an app shell cannot bypass main's proxy.
 agentSurface:
   profile: confined            # confined | shell-visible | build-capable
   # Final release gate. Keep false until the immutable source-free runtime and
   # builder images are published/pinned and the image + kind adversarial gates
   # are green. Helm fails loudly for every non-confined activation meanwhile.
   releaseApproved: false
+  # The exact-name exec token reaches Kubernetes through a task-owned fixed-
+  # target TCP proxy. This avoids CNI-dependent Service-DNAT policy behavior:
+  # some clusters enforce NetworkPolicy against the API endpoint address rather
+  # than the 10.43.0.1 Service VIP. The proxy has no token and can only connect
+  # to kubernetes.default.svc:443.
   # shell-visible + build-capable: harden every exec-reachable app pod so a shell
   # cannot persist an invisible on-pod mutation (readOnlyRootFilesystem) or reach the
   # k8s API (automountServiceAccountToken:false). The build-capable TARGET pod keeps a

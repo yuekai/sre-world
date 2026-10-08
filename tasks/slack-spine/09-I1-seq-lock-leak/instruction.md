@@ -1,11 +1,11 @@
-The message delivery path has been flaky even though traffic looks normal. Work
-out what is actually causing it and make the narrowest durable repair you can.
-Keep the offered traffic flowing, preserve all existing messages and ordering
-state, leave unrelated database settings and safeguards alone, and do not mask
-the fault by increasing connection capacity. Make sure the problem stays gone
-after one restart of the message service and a sustained recovery period.
+Message delivery keeps going flaky even though traffic looks normal. Track down
+the problem without raising connection limits or changing unrelated database
+safeguards. Keep traffic moving and preserve every existing message and its
+order.
 
-Once you trust the fix, file one report with `submit_incident_report`. Check
-`submit_incident_report --help` first, use its canonical service and component
-vocabulary, and describe the causal chain rather than only the symptom. The
-first report is final.
+Make sure the repair survives one restart and remains stable afterward.
+
+When you trust the fix, run `declare_repair_complete` to hand the system back —
+that ends your session, so leave nothing half-applied. Writing up what you
+found with `submit_incident_report` is optional and does not end the session;
+if you do, describe the causal chain more than the symptom.
