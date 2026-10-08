@@ -97,10 +97,18 @@ def _config_tree(run: Path, name: str, text: str, *, binary: bytes = b"same") ->
     (root / "opaque.bin").write_bytes(binary)
 
 
+def _declared_meta(run: Path) -> None:
+    # The declaration is the loadgen's declare_ts_s; the report is advisory.
+    (run / "meta.json").write_text(
+        '{"declare_ts_s":300.0,"soak_start_s":300.0,"end_s":600.0,'
+        '"completion_reason":"declared_soak_complete"}\n'
+    )
+
+
 def test_repair_scope_is_policy_free_semantic_diff(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir(parents=True)
-    (run / "report.json").write_text('{"done":true}\n')
+    _declared_meta(run)
     _config_tree(run, "config_before", "roles:\n  message:\n    db:\n      pool_size: 20\n")
     _config_tree(run, "config_after", "roles: {message: {db: {pool_size: 21}}}\n")
     _config_tree(run, "config_after_soak_end", "roles:\n  message:\n    db:\n      pool_size: 21\n")
@@ -115,6 +123,7 @@ def test_repair_scope_is_policy_free_semantic_diff(tmp_path: Path) -> None:
     )
     assert first == second
     assert first["pass"] is True
+    assert first["declared"] is True
     assert first["changed_keys"] == [
         "yaml:app.yaml.roles.message.db.pool_size"
     ]
@@ -127,7 +136,7 @@ def test_repair_scope_is_policy_free_semantic_diff(tmp_path: Path) -> None:
 def test_repair_scope_normalizes_representation_and_detects_drift(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    (run / "report.json").write_text('{"done":true}\n')
+    _declared_meta(run)
     _config_tree(run, "config_before", "a: 1\nb: 'same'\n")
     _config_tree(run, "config_after", "b: same\na: 1\n")
     _config_tree(run, "config_after_soak_end", "a: 2\nb: same\n")
@@ -140,6 +149,11 @@ def test_repair_scope_missing_empty_or_malformed_phase_fails_loudly(tmp_path: Pa
     run = tmp_path / "run"
     run.mkdir()
     (run / "report.json").write_text('{"done":true}\n')
+    # A report is not a declaration: without the loadgen's metadata the
+    # declaration boundary is unknown and the materializer fails loudly.
+    with pytest.raises(EvidenceError, match="meta.json"):
+        repair_scope(run, {})
+    _declared_meta(run)
     with pytest.raises(EvidenceError, match="config_before"):
         repair_scope(run, {})
     (run / "config_before").mkdir()

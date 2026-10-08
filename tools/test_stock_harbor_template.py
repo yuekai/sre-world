@@ -136,7 +136,7 @@ case "$args" in
     printf '%s\n' '{"ok":true,"state":"declaration_already_accepted"}' >"$out"
     printf 200 ;;
   *episode_done*)
-    printf '%s\n' '{"done":true,"error":null}' >"$out"
+    printf '%s\n' '{"done":true,"error":null,"declare_ts_s":null,"soak_start_s":120.0,"end_s":240.0,"completion_reason":"window_elapsed_soak_complete"}' >"$out"
     printf 200 ;;
   */grader/bundle*) cp "$TEST_GRADER_BUNDLE" "$out" ;;
   *) exit 90 ;;

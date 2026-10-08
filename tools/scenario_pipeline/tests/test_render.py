@@ -32,10 +32,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 def _live_scenario_yaml(scenario_id: str, filename: str) -> dict:
     """Load exemplar YAML for round-trip comparison.
 
-    Both exemplars (03-F1, 03-QE1) now ship on main, so the on-disk read is the
-    live path and the `fixtures/<id>-exemplar/` snapshot is only a fallback for
-    a checkout where the scenario is absent. It is kept rather than deleted so
-    the test never silently degrades to a skip on a partial clone.
+    Both exemplars (03-F1, 03-QE1) were retired from scenarios/, so the
+    `fixtures/<id>-exemplar/` snapshot (taken at their last shipped state, with
+    the `legacy_outcome` materializer renamed to `outcome`) is the authoritative
+    copy. The on-disk read is kept so a restored scenario takes precedence.
     """
     on_disk = REPO / "scenarios" / "frappe" / scenario_id / filename
     if on_disk.exists():

@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import EvidenceError
-from .common import report_submitted, tree_hash
+from .common import repair_declared, tree_hash
 
 
 def materialize(run_dir: Path, _manifest: dict[str, Any]) -> dict[str, Any]:
-    submitted = report_submitted(run_dir)
+    submitted = repair_declared(run_dir)
     before = tree_hash(run_dir / "config_before")
     declaration = tree_hash(run_dir / "config_after")
     soak_path = run_dir / "config_after_soak_end"

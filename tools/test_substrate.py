@@ -518,7 +518,7 @@ def test_profile_fingerprint_and_health_version():
 @pytest.mark.parametrize(
     ("scenario", "profile"),
     [
-        ("06-F4-maintenance-collision", "maintenance_collision_temporal_1h_agent"),
+        ("06-F4-maintenance-collision", "maintenance_collision_agent"),
         ("13-P1-distractor-volume-shell", "p1_shell_distractor_eval_1h"),
     ],
 )

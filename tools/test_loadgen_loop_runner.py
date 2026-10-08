@@ -7,9 +7,10 @@ monkeypatched to record instead of sending.
 What must hold:
 - A declare mid-loop ends the repeating pre-soak window and fires the
   independent soak stream rebased to the soak-start instant.
-- A never-declaring (nop) episode still ENDS at declare_deadline_s — loop mode
-  removes the hand-enumerated schedule length, not the episode bound the
-  verifier relies on (episode_done.json must land inside its poll budget).
+- A never-declaring (nop) episode is frozen when its agent window elapses (one
+  cycle short of declare_deadline_s, the loop's schedule end) and then runs the
+  same full soak a declaring episode gets — loop mode removes the
+  hand-enumerated schedule length, not the episode bound.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ import asyncio
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 LOADGEN_COMMON = ROOT / "loadgen-common"
@@ -44,7 +47,7 @@ if "aiohttp" not in sys.modules:
         ClientTimeout=_ClientTimeout,
     )
 
-from loadgen.runner import LoadGen  # noqa: E402
+from loadgen.runner import LoadGen, agent_window_s, next_cycle_boundary_s  # noqa: E402
 from loadgen.schedule import Profile  # noqa: E402
 
 
@@ -77,6 +80,8 @@ def _run_with_recording(profile: Profile, tmp_path, monkeypatch, declare_at_s: f
 
     async def scenario() -> None:
         task = asyncio.create_task(lg.run())
+        await asyncio.sleep(0)
+        assert lg.signal_episode_start() is True
         if declare_at_s is not None:
             await asyncio.sleep(declare_at_s)
             lg.declare()
@@ -90,7 +95,10 @@ def test_declare_mid_loop_switches_to_independent_soak(tmp_path, monkeypatch):
     lg, fired = _run_with_recording(_loop_profile(), tmp_path, monkeypatch, declare_at_s=0.22)
 
     assert lg.declare_ts_s is not None
-    assert lg.soak_start_s == lg.declare_ts_s  # declared after the warmup floor
+    # Declared after the warmup floor: the soak starts on the next cycle boundary.
+    assert lg.soak_start_s == next_cycle_boundary_s(lg.profile, lg.freeze_ts_s)
+    assert lg.soak_start_s >= lg.declare_ts_s
+    assert lg.completion_reason == "declared_soak_complete"
 
     phases = [phase for phase, _sched, _sent in fired]
     # The loop extended past the single configured cycle before the declare...
@@ -104,77 +112,23 @@ def test_declare_mid_loop_switches_to_independent_soak(tmp_path, monkeypatch):
     assert min(soak_scheds) >= lg.soak_start_s
 
 
-def test_nop_episode_still_ends_at_deadline(tmp_path, monkeypatch):
+def test_nop_episode_freezes_at_agent_window_then_soaks(tmp_path, monkeypatch):
     profile = _loop_profile()
-    monkeypatch.setattr("loadgen.runner.VERIFIER_FINALIZATION_GRACE_S", 0.0)
+    lg, fired = _run_with_recording(profile, tmp_path, monkeypatch, declare_at_s=None)
 
-    async def timed() -> tuple[LoadGen, list, float]:
-        fired: list[tuple[str, float, float]] = []
-
-        def fake_fire(self: LoadGen, phase: str, sched_s: float) -> None:
-            assert self._t0 is not None
-            fired.append((phase, sched_s, asyncio.get_running_loop().time() - self._t0))
-
-        monkeypatch.setattr(LoadGen, "_fire", fake_fire)
-        lg = LoadGen(profile, tmp_path / "loadgen.jsonl")
-        loop = asyncio.get_running_loop()
-        start = loop.time()
-        await asyncio.wait_for(lg.run(), timeout=5.0)
-        return lg, fired, loop.time() - start
-
-    lg, fired, elapsed = asyncio.run(timed())
-
+    window = agent_window_s(profile)
+    assert window == pytest.approx(profile.declare_deadline_s - 0.1)  # one cycle short
     assert lg.declare_ts_s is None
+    assert lg.freeze_reason == "window_elapsed"
+    assert lg.freeze_ts_s is not None and lg.freeze_ts_s >= window - 0.01
+    assert lg.soak_start_s == next_cycle_boundary_s(profile, lg.freeze_ts_s)
+    assert lg.completion_reason == "window_elapsed_soak_complete"
     phases = [phase for phase, _sched, _sent in fired]
-    # The loop ran right up to the deadline (c3 is the last full cycle)...
-    assert any(p.startswith("c3.") for p in phases)
-    # ...never soaked, and the episode terminated at ~declare_deadline_s.
-    assert not any(p.startswith("soak") for p in phases)
-    assert all(sched < profile.declare_deadline_s for _p, sched, _s in fired)
-    assert elapsed >= profile.declare_deadline_s - 0.05
-    assert elapsed < profile.declare_deadline_s + 1.0
-
-
-def test_verifier_can_finalize_after_declaration_deadline_closes(tmp_path, monkeypatch):
-    profile = _loop_profile()
-    monkeypatch.setattr("loadgen.runner.VERIFIER_FINALIZATION_GRACE_S", 0.25)
-    monkeypatch.setattr(LoadGen, "_fire", lambda *_args: None)
-
-    async def scenario() -> LoadGen:
-        lg = LoadGen(profile, tmp_path / "deadline-race.jsonl")
-        task = asyncio.create_task(lg.run())
-        await asyncio.sleep(profile.declare_deadline_s + 0.03)
-        assert lg._accepting_declarations is False
-        assert lg.finished.is_set() is False
-        assert lg.request_undeclared_finalization() is True
-        await asyncio.wait_for(task, timeout=1.0)
-        return lg
-
-    lg = asyncio.run(scenario())
-    assert lg.declare_ts_s is None
-    assert lg.completion_reason == "verifier_finalized_without_declaration"
-
-
-def test_loop_undeclared_finalization_uses_explicit_floor(tmp_path, monkeypatch):
-    profile = Profile(
-        **{
-            **_loop_profile().__dict__,
-            "undeclared_evidence_min_s": 0.15,
-        }
+    # The loop kept repeating the single configured cycle up to the freeze...
+    assert any(p.startswith("c2.") for p in phases)
+    # ...and the full soak still ran after it.
+    first_soak = phases.index("soak.peak")
+    assert all(p.startswith("soak") for p in phases[first_soak:])
+    assert all(
+        sched < lg.soak_start_s for p, sched, _s in fired if not p.startswith("soak")
     )
-
-    async def scenario() -> tuple[LoadGen, float]:
-        monkeypatch.setattr(LoadGen, "_fire", lambda *_args: None)
-        lg = LoadGen(profile, tmp_path / "loop-finalized.jsonl")
-        started = asyncio.get_running_loop().time()
-        task = asyncio.create_task(lg.run())
-        await asyncio.sleep(0.01)
-        assert lg.request_undeclared_finalization() is True
-        await asyncio.wait_for(task, timeout=1.0)
-        return lg, asyncio.get_running_loop().time() - started
-
-    lg, elapsed = asyncio.run(scenario())
-    assert elapsed >= 0.14
-    assert elapsed < 0.30
-    assert lg.declare_ts_s is None
-    assert lg.completion_reason == "verifier_finalized_without_declaration"

@@ -12,7 +12,7 @@ from tools.ci_resolve_calibrate import resolve  # noqa: E402
 CHANGED_ONE = ["scenarios/slack-spine/09-I1-seq-lock-leak/spec.yaml",
                "scenarios/slack-spine/09-I1-seq-lock-leak/ground-truth.yaml",
                "tools/calibrate.py"]
-CHANGED_TWO = CHANGED_ONE + ["scenarios/frappe/03-F1-connection-cap/spec.yaml"]
+CHANGED_TWO = CHANGED_ONE + ["scenarios/frappe/07-desk-and-queue-outage/spec.yaml"]
 
 
 def test_auto_detect_single_changed_scenario():
@@ -23,10 +23,10 @@ def test_auto_detect_single_changed_scenario():
 
 
 def test_explicit_qualified_scenario_wins():
-    r = resolve("/calibrate frappe/mariadb-connection-cap", CHANGED_ONE)
+    r = resolve("/calibrate frappe/desk-and-queue-outage", CHANGED_ONE)
     assert r["ok"] == "true" and r["substrate"] == "frappe"
-    assert r["scenario"] == "03-F1-connection-cap"
-    assert r["slug"] == "mariadb-connection-cap"
+    assert r["scenario"] == "07-desk-and-queue-outage"
+    assert r["slug"] == "desk-and-queue-outage"
 
 
 def test_storage_id_resolves_with_semantic_slug():

@@ -1,7 +1,7 @@
 """The pointer-resolution gate: a check may not observe a key nothing emits.
 
 Regression origin: 06-sends-collapse-and-stay-collapsed observed
-derived/legacy-outcome.json at /checks/data_survival/pass. The materializer was
+derived/outcome.json at /checks/data_survival/pass. The materializer was
 declared and produced its artifact, so every existing gate passed; the pointer
 named a key that has never existed. It failed inside a live cluster, two
 calibration runs later.
@@ -26,7 +26,7 @@ from tools.pointer_gate import (
     unresolvable_pointer,
 )
 
-_LO = "derived/legacy-outcome.json"
+_LO = "derived/outcome.json"
 
 
 def test_catches_the_defect_that_shipped() -> None:

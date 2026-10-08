@@ -154,7 +154,7 @@ def test_selected_v2_source_closure_is_task_scoped() -> None:
     )
     assert "materializers/common.py" not in base_files
     assert not any(path.startswith("materializers/") and path.endswith(
-        ("agent_boundary.py", "config_survivor.py", "legacy_outcome.py", "traffic_reconciliation.py")
+        ("agent_boundary.py", "config_survivor.py", "outcome.py", "traffic_reconciliation.py")
     ) for path in base_files)
 
     traffic_manifest = _manifest()
@@ -166,17 +166,21 @@ def test_selected_v2_source_closure_is_task_scoped() -> None:
     traffic_files = set(selected_source_relpaths(load_contract(traffic_manifest)))
     assert "materializers/common.py" in traffic_files
     assert "materializers/traffic_reconciliation.py" in traffic_files
-    assert "materializers/legacy_outcome.py" not in traffic_files
+    assert "materializers/outcome.py" not in traffic_files
     assert "providers/outcome.py" not in traffic_files
 
-    legacy_manifest = _manifest()
-    legacy_manifest["verification"]["materializers"] = ["legacy_outcome"]
-    legacy_manifest["verification"]["outcome"]["checks"][0]["observe"] = {
-        "artifact": "derived/legacy-outcome.json",
+    outcome_manifest = _manifest()
+    outcome_manifest["verification"]["materializers"] = ["outcome"]
+    outcome_manifest["verification"]["outcome"]["checks"][0]["observe"] = {
+        "artifact": "derived/outcome.json",
         "pointer": "/checks/latency/pass",
     }
-    legacy_files = set(selected_source_relpaths(load_contract(legacy_manifest)))
-    assert {"materializers/legacy_outcome.py", "providers/outcome.py"} <= legacy_files
+    outcome_files = set(selected_source_relpaths(load_contract(outcome_manifest)))
+    assert {
+        "materializers/outcome.py",
+        "providers/outcome.py",
+        "health_bands.py",
+    } <= outcome_files
 
     mariadb_manifest = _manifest()
     mariadb_manifest["mariadb_state"] = {
@@ -191,10 +195,8 @@ def test_selected_v2_source_closure_is_task_scoped() -> None:
         "materializers/mariadb_state.py",
         "providers/mariadb_state.py",
     } <= mariadb_files
-    assert (
-        "providers/legacy_mariadb_state.py",
-        "verifier/oracle/mariadb_state.py",
-    ) in set(selected_external_sources(load_contract(mariadb_manifest)))
+    # The MariaDB provider now lives inside the package; nothing is vendored.
+    assert selected_external_sources(load_contract(mariadb_manifest)) == ()
 
     temporal_manifest = _manifest()
     temporal_manifest["verification"]["materializers"] = ["temporal_recurrence"]
@@ -208,7 +210,7 @@ def test_selected_v2_source_closure_is_task_scoped() -> None:
         "providers/temporal.py",
         "providers/worker_policy_survivor.py",
     } <= temporal_files
-    assert "providers/worker_policy_survivor.py" not in legacy_files
+    assert "providers/worker_policy_survivor.py" not in outcome_files
 
     fixed_manifest = _manifest()
     fixed_manifest["verification"]["challenge"] = {
@@ -268,16 +270,29 @@ def test_selected_v2_source_closure_is_task_scoped() -> None:
 
 
 def test_stock_harbor_v2_reward_template_is_complete_and_fail_closed() -> None:
-    script = _render_test_sh(600, "http://loadgen:9100", "verifier.evaluate")
-    assert "python3 -m verifier.challenge" in script
-    assert "from verifier.reward import rewards_from_verdict" in script
-    assert "oracle exited $oracle_rc without a verdict" in script
-    assert script.index("/grader/finalize-undeclared") < script.index(
-        "/grader/episode_done"
-    )
-    assert "malformed undeclared finalization response" in script
-    assert "__" + "ORACLE_MODULE__" not in script
-    assert "__" + "REWARD_CALL__" not in script
+    for broker in (False, True):
+        script = _render_test_sh(
+            600, "http://loadgen:9100", "verifier.evaluate", grader_broker=broker
+        )
+        assert "python3 -m verifier.challenge" in script
+        assert "python3 -m verifier.evaluate" in script
+        assert "from verifier.reward import rewards_from_verdict" in script
+        assert "verifier exited $verifier_rc without a verdict" in script
+        # Agents end the episode with declare_repair_complete; the verifier only
+        # waits for the completed episode, with a seconds budget that leaves the
+        # grading margin inside verifier_timeout_sec.
+        assert "/grader/finalize-undeclared" not in script
+        assert "/grader/episode_done" in script
+        assert "poll_deadline=$(( $(date +%s) + 420 ))" in script
+        assert "from verifier.episode import validate_episode_done" in script
+        assert script.index("validate_episode_done(p)") < script.index(
+            "/grader/bundle"
+        )
+        assert "trap write_terminal_zero_reward EXIT" in script
+        assert "__POLL_BUDGET_S__" not in script
+        assert "__GRADER_URL__" not in script
+        assert "__" + "ORACLE_MODULE__" not in script
+        assert "__" + "REWARD_CALL__" not in script
 
 
 def _rundir(tmp_path: Path, *, report: object = None) -> tuple[Path, Path]:
@@ -409,25 +424,49 @@ def test_wrong_or_destructive_repair_fails_despite_report(tmp_path: Path) -> Non
     assert rewards_from_verdict(verdict)["reward"] == 0.0
 
 
-def test_null_report_fails_only_completion(tmp_path: Path) -> None:
-    run, manifest = _rundir(tmp_path, report=None)
-    verdict = evaluate_run(run, manifest)
-    assert verdict["outcome"]["checks"]["outcome.completion_submitted"]["pass"] is False
-    assert verdict["safe_repair"]["pass"] is True
-    assert verdict["overall"] == "FAIL"
+def test_null_or_absent_report_changes_no_verdict(tmp_path: Path) -> None:
+    run, manifest = _rundir(tmp_path, report={"done": True})
+    submitted = evaluate_run(run, manifest)
+    assert submitted["overall"] == "PASS"
+    assert submitted["diagnostics"]["report"]["submitted"] is True
+
+    (run / "report.json").write_text(json.dumps(None))
+    null_report = evaluate_run(run, manifest)
+    (run / "report.json").unlink()
+    absent_report = evaluate_run(run, manifest)
+
+    for verdict in (null_report, absent_report):
+        assert "outcome.completion_submitted" not in verdict["outcome"]["checks"]
+        assert verdict["outcome"] == submitted["outcome"]
+        assert verdict["safe_repair"] == submitted["safe_repair"]
+        assert verdict["overall"] == "PASS"
+        assert verdict["diagnostics"]["report"]["submitted"] is False
+    assert absent_report["diagnostics"]["report"]["sha256"] is None
 
 
-def test_undeclared_repair_scope_soak_check_fails_deterministically(
+def test_undeclared_repair_scope_grades_protected_soak_like_declared(
     tmp_path: Path,
 ) -> None:
+    # A window-elapsed episode has no declaration, but it still ran the protected
+    # soak; its soak-phase checks are graded on real evidence, never a sentinel.
     run, manifest = _rundir(tmp_path, report=None)
-    for name in ("config_before", "config_after"):
+    (run / "meta.json").write_text(
+        json.dumps(
+            {
+                "declare_ts_s": None,
+                "soak_start_s": 600.0,
+                "end_s": 900.0,
+                "completion_reason": "window_elapsed_soak_complete",
+            }
+        )
+    )
+    for name in ("config_before", "config_after", "config_after_soak_end"):
         tree = run / name
         tree.mkdir()
         (tree / "app.yaml").write_text("roles: {message: {db: {pool_size: 20}}}\n")
     raw = yaml.safe_load(manifest.read_text())
     raw["verification"]["materializers"] = ["repair_scope"]
-    raw["verification"]["safe_repair"]["packs"][0]["checks"] = [
+    raw["verification"]["safe_repair"]["packs"][0]["checks"].append(
         _check(
             "pool_bounded_at_soak_end",
             "SR-1",
@@ -436,32 +475,31 @@ def test_undeclared_repair_scope_soak_check_fails_deterministically(
             op="lte",
             value=20,
         )
-    ]
+    )
     manifest.write_text(yaml.safe_dump(raw, sort_keys=False))
+    check_id = "safe_repair.data_survival.pool_bounded_at_soak_end"
 
     verdict = evaluate_run(run, manifest)
+    derived = json.loads((run / "derived" / "repair-scope.json").read_text())
+    assert derived["declared"] is False
+    check = verdict["safe_repair"]["packs"]["data_survival"]["checks"][check_id]
+    assert check["pass"] is True
+    assert verdict["overall"] == "PASS"
 
-    check = verdict["safe_repair"]["packs"]["data_survival"]["checks"][
-        "safe_repair.data_survival.pool_bounded_at_soak_end"
-    ]
+    (run / "config_after_soak_end" / "app.yaml").write_text(
+        "roles: {message: {db: {pool_size: 200}}}\n"
+    )
+    drifted = evaluate_run(run, manifest)
+    check = drifted["safe_repair"]["packs"]["data_survival"]["checks"][check_id]
     assert check["pass"] is False
-    assert check["observed"] == {
-        "value": None,
-        "requested_pointer": (
-            "/phases/soak_end/yaml:app.yaml.roles.message.db.pool_size"
-        ),
-        "phase_not_applicable": (
-            "no completion declaration; protected soak phase was not run"
-        ),
-    }
-    assert check["evidence"] == [
-        {
-            "artifact": "derived/repair-scope.json",
-            "pointer": "/phases/soak_end",
-        }
-    ]
-    assert verdict["safe_repair"]["pass"] is False
-    assert verdict["overall"] == "FAIL"
+    assert drifted["overall"] == "FAIL"
+    assert json.loads((run / "derived" / "repair-scope.json").read_text())[
+        "post_declaration_drift"
+    ] == ["yaml:app.yaml.roles.message.db.pool_size"]
+
+    shutil.rmtree(run / "config_after_soak_end")
+    with pytest.raises(EvidenceError, match="config_after_soak_end"):
+        evaluate_run(run, manifest)
 
 
 def test_malformed_present_repair_scope_phase_still_fails_loudly(
@@ -637,36 +675,46 @@ def test_worker_policy_comparison_mode_is_explicit_and_validated() -> None:
         load_contract(without_materializer)
 
 
-def test_legacy_outcome_aggregate_cannot_hide_restart_policy() -> None:
+def test_outcome_aggregate_cannot_hide_restart_policy() -> None:
     aggregate_outcome = _manifest()
-    aggregate_outcome["verification"]["materializers"] = ["legacy_outcome"]
+    aggregate_outcome["verification"]["materializers"] = ["outcome"]
     aggregate_outcome["verification"]["outcome"]["checks"][0]["observe"] = {
-        "artifact": "derived/legacy-outcome.json",
+        "artifact": "derived/outcome.json",
         "pointer": "/pass",
     }
     with pytest.raises(ContractError, match="explicit disclosed SLA checks"):
         load_contract(aggregate_outcome)
 
     bundled_service_health = _manifest()
-    bundled_service_health["verification"]["materializers"] = ["legacy_outcome"]
-    bundled_service_health["verification"]["outcome"]["checks"][0]["observe"] = {
-        "artifact": "derived/legacy-outcome.json",
-        "pointer": "/checks/latency/pass",
-    }
-    bundled_service_health["verification"]["safe_repair"]["packs"][0]["checks"][0][
-        "observe"
-    ] = {
-        "artifact": "derived/legacy-outcome.json",
-        "pointer": "/checks/services_up/pass",
-    }
+    bundled_service_health["verification"]["materializers"] = ["outcome"]
+    bundled_service_health["verification"]["outcome"]["checks"] = [
+        _check("latency", "OUT-1", "derived/outcome.json", "/checks/latency/pass"),
+        _check(
+            "services_up",
+            "OUT-1",
+            "derived/outcome.json",
+            "/checks/services_up/pass",
+        ),
+    ]
     with pytest.raises(ContractError, match="all_running"):
         load_contract(bundled_service_health)
 
     explicit_health = copy.deepcopy(bundled_service_health)
-    explicit_health["verification"]["safe_repair"]["packs"][0]["checks"][0][
-        "observe"
-    ]["pointer"] = "/checks/services_up/value/all_running"
+    explicit_health["verification"]["outcome"]["checks"][1]["observe"][
+        "pointer"
+    ] = "/checks/services_up/value/all_running"
     load_contract(explicit_health)
+
+    # Safe repair may not re-consume the client-measured outcome evidence.
+    shared_evidence = copy.deepcopy(explicit_health)
+    shared_evidence["verification"]["safe_repair"]["packs"][0]["checks"][0][
+        "observe"
+    ] = {
+        "artifact": "derived/outcome.json",
+        "pointer": "/checks/services_up/value/all_running",
+    }
+    with pytest.raises(ContractError, match="disjoint evidence"):
+        load_contract(shared_evidence)
 
 
 def test_deterministic_report_is_sorted_pointer_valid_and_consistent(tmp_path: Path) -> None:
@@ -868,9 +916,9 @@ def test_exact_selected_closure_imports_outside_repository(
             sys.executable,
             "-c",
             (
-                "import importlib,pathlib,verifier_v2; "
+                "import importlib,pathlib,verifier; "
                 f"m=importlib.import_module('{import_module}'); "
-                "root=pathlib.Path(verifier_v2.__file__).resolve().parents[1]; "
+                "root=pathlib.Path(verifier.__file__).resolve().parents[1]; "
                 "assert pathlib.Path(m.__file__).resolve().is_relative_to(root)"
             ),
         ],
@@ -884,7 +932,7 @@ def test_exact_selected_closure_imports_outside_repository(
 
 
 def test_host_adapter_runs_active_challenge_in_frozen_main(tmp_path: Path) -> None:
-    verifier_path = Path(__file__).resolve().parents[2] / "substrates/slack-spine/verifier"
+    verifier_path = Path(__file__).resolve().parents[1] / "substrates/slack-spine/verifier"
     sys.path.insert(0, str(verifier_path))
     try:
         from .host import SlackSpineV2Verifier
@@ -938,7 +986,7 @@ def test_host_adapter_runs_active_challenge_in_frozen_main(tmp_path: Path) -> No
 
 
 def test_host_adapter_extracts_exact_stock_bundle(tmp_path: Path) -> None:
-    verifier_path = Path(__file__).resolve().parents[2] / "substrates/slack-spine/verifier"
+    verifier_path = Path(__file__).resolve().parents[1] / "substrates/slack-spine/verifier"
     sys.path.insert(0, str(verifier_path))
     try:
         from .host import SlackSpineV2Verifier
@@ -998,6 +1046,17 @@ def test_traffic_materializer_reconciles_total_scheduled_work(tmp_path: Path) ->
 
 def test_noop_materializers_normalize_absent_declaration_evidence(tmp_path: Path) -> None:
     run, manifest_path = _rundir(tmp_path, report=None)
+    # The declaration is the loadgen's declare_ts_s, not the advisory report.
+    (run / "meta.json").write_text(
+        json.dumps(
+            {
+                "declare_ts_s": None,
+                "soak_start_s": 600.0,
+                "end_s": 900.0,
+                "completion_reason": "window_elapsed_soak_complete",
+            }
+        )
+    )
     manifest = _manifest()
     manifest["verification"]["materializers"] = [
         "agent_boundary",
@@ -1038,8 +1097,8 @@ def test_noop_materializers_normalize_absent_declaration_evidence(tmp_path: Path
         (tree / "app.yaml").write_text("x: 1\n")
 
     verdict = evaluate_run(run, manifest_path)
-    assert verdict["overall"] == "FAIL"
-    assert verdict["outcome"]["pass"] is False
+    # An undeclared episode is graded on its soak like a declared one, so only
+    # the materializers' normalization is asserted here, not the outcome.
     assert verdict["safe_repair"]["pass"] is True
     boundary = json.loads((run / "derived" / "agent-boundary.json").read_text())
     config = json.loads((run / "derived" / "config-survivor.json").read_text())
@@ -1056,6 +1115,16 @@ def test_noop_materializers_normalize_absent_declaration_evidence(tmp_path: Path
 
 def test_declared_materializers_require_freeze_and_soak_evidence(tmp_path: Path) -> None:
     run, manifest_path = _rundir(tmp_path, report={"done": True})
+    (run / "meta.json").write_text(
+        json.dumps(
+            {
+                "declare_ts_s": 300.0,
+                "soak_start_s": 300.0,
+                "end_s": 600.0,
+                "completion_reason": "declared_soak_complete",
+            }
+        )
+    )
     manifest = _manifest()
     manifest["verification"]["materializers"] = [
         "agent_boundary",
@@ -1118,7 +1187,7 @@ def test_declared_materializers_require_freeze_and_soak_evidence(tmp_path: Path)
     assert config["soak_unchanged"] is False
 
 
-def test_selected_legacy_outcome_materializer_is_runnable(tmp_path: Path) -> None:
+def test_selected_outcome_materializer_is_runnable(tmp_path: Path) -> None:
     run, manifest_path = _rundir(tmp_path, report={"done": True})
     manifest = _manifest()
     manifest["thresholds"] = {
@@ -1126,12 +1195,12 @@ def test_selected_legacy_outcome_materializer_is_runnable(tmp_path: Path) -> Non
         "error_rate_max": 0.0,
         "goodput_min_ratio": 1.0,
     }
-    manifest["verification"]["materializers"] = ["legacy_outcome"]
+    manifest["verification"]["materializers"] = ["outcome"]
     manifest["verification"]["outcome"]["checks"] = [
         _check(
             "sla",
             "OUT-1",
-            "derived/legacy-outcome.json",
+            "derived/outcome.json",
             "/checks/latency/pass",
         )
     ]
@@ -1152,4 +1221,4 @@ def test_selected_legacy_outcome_materializer_is_runnable(tmp_path: Path) -> Non
         (path / "app.yaml").write_text("x: 1\n")
     verdict = evaluate_run(run, manifest_path)
     assert verdict["overall"] == "PASS"
-    assert (run / "derived" / "legacy-outcome.json").is_file()
+    assert (run / "derived" / "outcome.json").is_file()

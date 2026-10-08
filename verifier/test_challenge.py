@@ -94,11 +94,13 @@ def _profile_manifest(profile_id: str) -> dict:
     if profile["type"] == "database_survival":
         data_pack = manifest["verification"]["safe_repair"]["packs"][0]
         assert data_pack["name"] == "data_survival"
-        data_pack["checks"][0] = _check(
-            "challenge_completed",
-            "SR-2",
-            "challenge/database-survival.json",
-            "/pass",
+        data_pack["checks"].append(
+            _check(
+                "challenge_completed",
+                "SR-2",
+                "challenge/database-survival.json",
+                "/pass",
+            )
         )
         return manifest
     assert pack is not None
@@ -110,27 +112,53 @@ def _profile_manifest(profile_id: str) -> dict:
     return manifest
 
 
-def _write_undeclared_evidence(run: Path) -> None:
+def _write_episode_evidence(run: Path, *, declared: bool = True) -> None:
+    """Write the loadgen lifecycle metadata and the sidecar's freeze receipt.
+
+    Which ending happened is the loadgen's ``declare_ts_s``: a declared repair
+    (``declare_repair_complete``) or the agent window elapsing. Both endings run
+    the protected soak and both freeze the agent before the challenge.
+    """
+
     (run / "meta.json").write_text(
-        json.dumps({"completion_reason": "verifier_finalized_without_declaration"})
-    )
-    (run / "undeclared-finalization.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
-                "reason": "verifier_started_without_declaration",
-                "requested_s": 1.0,
-                "completed_s": 150.0,
-                "undeclared_evidence_min_s": 150.0,
-                "agent_freezer_receipt": {
-                    "success": True,
-                    "remaining_pids": [],
-                },
+                "declare_ts_s": 300.0 if declared else None,
+                "freeze_reason": "declared" if declared else "window_elapsed",
+                "soak_start_s": 300.0 if declared else 900.0,
+                "end_s": 600.0 if declared else 1200.0,
+                "completion_reason": (
+                    "declared_soak_complete"
+                    if declared
+                    else "window_elapsed_soak_complete"
+                ),
+            }
+        )
+    )
+    (run / "agent-boundary.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "remaining_pids": [],
+                "reason": "declared" if declared else "window_elapsed",
+                "freeze_ack_s": 300.5 if declared else 900.5,
+                "submission_to_freeze_mutation": False if declared else None,
             }
         )
     )
 
 
+# The registry names this profile, but its module was never shipped in an
+# Incident Arena task (only the unpublished build-capable 11-BC1 selects it), so it
+# could not be recovered when this repository was reconstructed. Strict: these
+# tests must start failing as xfail the moment the module is restored.
+_UNRECOVERED_PROFILE = "slack_source_lock_restart_v1"
+_UNRECOVERED = pytest.mark.xfail(
+    strict=True, reason=f"{_UNRECOVERED_PROFILE} module was not recoverable"
+)
+
+
+@_UNRECOVERED
 def test_challenge_registry_is_exhaustive_and_drives_receipts_and_closure() -> None:
     assert set(CHALLENGE_TYPES) == set(CHALLENGE_PROFILE_TYPES.values())
     receipts = [item.receipt_name for item in CHALLENGE_TYPES.values()]
@@ -167,7 +195,7 @@ def test_challenge_registry_is_exhaustive_and_drives_receipts_and_closure() -> N
 def test_runtime_restart_session_planner_matches_loadgen_profile() -> None:
     configured = challenge_profile("slack_runtime_restart_v1")["session_planner"]
     profiles = yaml.safe_load(
-        (Path(__file__).parents[2] / "loadgen-common/loadgen/profiles.yaml").read_text()
+        (Path(__file__).parents[1] / "loadgen-common/loadgen/profiles.yaml").read_text()
     )
     authored = profiles["profiles"]["bc1_distractor_eval"]
     assert configured == {
@@ -188,7 +216,7 @@ def test_host_stages_runtime_restart_external_planner(tmp_path: Path) -> None:
     package = tmp_path / "verifier"
     stage_selected_sources(contract, package)
     planner = package / "providers/session_planner.py"
-    canonical = Path(__file__).parents[2] / "loadgen-common/loadgen/session.py"
+    canonical = Path(__file__).parents[1] / "loadgen-common/loadgen/session.py"
     assert planner.read_bytes() == canonical.read_bytes()
 
     proc = subprocess.run(
@@ -358,7 +386,7 @@ def test_challenge_broker_request_disables_inherited_proxies(
         return Opener()
 
     monkeypatch.setattr(challenge.urllib.request, "build_opener", build_opener)
-    request = challenge.urllib.request.Request("http://verifier-v2-challenge:9190")
+    request = challenge.urllib.request.Request("http://verifier-challenge:9190")
 
     assert challenge._direct_urlopen(request, timeout=195) is response
     assert captured["request"] is request
@@ -423,15 +451,7 @@ def _invoke_lock_challenge(
     run = tmp_path / "run"
     run.mkdir()
     (run / "report.json").write_text('{"done":true}\n')
-    (run / "agent-boundary.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "remaining_pids": [],
-                "submission_to_freeze_mutation": False,
-            }
-        )
-    )
+    _write_episode_evidence(run)
     manifest_path = tmp_path / "ground-truth.yaml"
     manifest_path.write_text(
         yaml.safe_dump(_challenge_manifest(), sort_keys=False)
@@ -515,7 +535,7 @@ def _invoke_lock_challenge(
         manifest_path=manifest_path,
         bundle_path=bundle,
         token_file=token,
-        broker_url="http://verifier-v2-challenge:9190",
+        broker_url="http://verifier-challenge:9190",
     )
     return receipt, run, captured, traffic
 
@@ -587,11 +607,7 @@ def test_sequence_restart_runs_fixed_restart_before_concurrent_survivor(
     run = tmp_path / "run"
     run.mkdir()
     (run / "report.json").write_text('{"done":true}\n')
-    (run / "agent-boundary.json").write_text(json.dumps({
-        "success": True,
-        "remaining_pids": [],
-        "submission_to_freeze_mutation": False,
-    }))
+    _write_episode_evidence(run)
     manifest_path = tmp_path / "ground-truth.yaml"
     manifest_path.write_text(
         yaml.safe_dump(_profile_manifest("slack_sequence_restart_v1"), sort_keys=False)
@@ -667,7 +683,7 @@ def test_sequence_restart_runs_fixed_restart_before_concurrent_survivor(
         manifest_path=manifest_path,
         bundle_path=bundle,
         token_file=token,
-        broker_url="http://verifier-v2-challenge:9190",
+        broker_url="http://verifier-challenge:9190",
     )
     assert events == ["probe:sequence_guard", "restart", "probe:sequence_guard", "concurrent"]
     assert receipt["pass"] is True
@@ -850,44 +866,16 @@ def test_lock_scope_failure_malformed_result_raises_without_receipt(
     assert not (tmp_path / "run/challenge/restart-receipt.json").exists()
 
 
-def test_no_declaration_writes_nonapplicable_failing_receipt(tmp_path: Path) -> None:
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("null\n")
-    _write_undeclared_evidence(run)
-    manifest_path = tmp_path / "ground-truth.yaml"
-    manifest_path.write_text(
-        yaml.safe_dump(_profile_manifest("slack_sequence_v1"), sort_keys=False)
-    )
-    bundle = tmp_path / "bundle.tar"
-    bundle.write_bytes(b"protected")
-    receipt = invoke_challenge(
-        run_dir=run,
-        manifest_path=manifest_path,
-        bundle_path=bundle,
-        token_file=tmp_path / "absent-token",
-        broker_url="http://unused",
-    )
-    assert receipt["pass"] is False
-    assert receipt["applicable"] is False
-    assert receipt["profile_id"] == "slack_sequence_v1"
-    assert receipt["agent_frozen"]["success"] is True
-    assert receipt["agent_frozen"]["remaining_pids"] == []
-    assert receipt["agent_frozen"]["source"] == "undeclared-finalization"
-    assert (
-        json.loads((run / "challenge/concurrent-sequence.json").read_text()) == receipt
-    )
-
-
-@pytest.mark.parametrize("missing", ["meta.json", "undeclared-finalization.json"])
-def test_no_declaration_requires_bound_finalization_evidence(
+@pytest.mark.parametrize("missing", ["meta.json", "agent-boundary.json"])
+@pytest.mark.parametrize("declared", [True, False])
+def test_challenge_requires_lifecycle_and_freeze_evidence(
     tmp_path: Path,
     missing: str,
+    declared: bool,
 ) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    (run / "report.json").write_text("null\n")
-    _write_undeclared_evidence(run)
+    _write_episode_evidence(run, declared=declared)
     (run / missing).unlink()
     manifest_path = tmp_path / "ground-truth.yaml"
     manifest_path.write_text(
@@ -907,18 +895,108 @@ def test_no_declaration_requires_bound_finalization_evidence(
     assert not (run / "challenge/concurrent-sequence.json").exists()
 
 
-@pytest.mark.parametrize("profile_id", sorted(CHALLENGE_PROFILE_TYPES))
-def test_each_challenge_profile_no_declaration_is_bound_and_deterministic(
+def _mutate_meta(run: Path, **changes: object) -> None:
+    meta = json.loads((run / "meta.json").read_text())
+    meta.update(changes)
+    (run / "meta.json").write_text(json.dumps(meta))
+
+
+def _mutate_boundary(run: Path, **changes: object) -> None:
+    boundary = json.loads((run / "agent-boundary.json").read_text())
+    boundary.update(changes)
+    (run / "agent-boundary.json").write_text(json.dumps(boundary))
+
+
+@pytest.mark.parametrize(
+    ("declared", "mutate", "match"),
+    [
+        (True, lambda run: _mutate_meta(run, completion_reason=None), "full agent window"),
+        (
+            True,
+            lambda run: _mutate_meta(
+                run, completion_reason="window_elapsed_soak_complete"
+            ),
+            "full agent window",
+        ),
+        (
+            False,
+            lambda run: _mutate_meta(
+                run, completion_reason="verifier_finalized_without_declaration"
+            ),
+            "full agent window",
+        ),
+        (True, lambda run: _mutate_meta(run, declare_ts_s=None), "full agent window"),
+        (
+            True,
+            lambda run: (run / "meta.json").write_text(json.dumps({"end_s": 1})),
+            "does not record declare_ts_s",
+        ),
+        (True, lambda run: _mutate_boundary(run, remaining_pids=[7]), "not proven frozen"),
+        (False, lambda run: _mutate_boundary(run, success=False), "not proven frozen"),
+        (
+            True,
+            lambda run: _mutate_boundary(run, submission_to_freeze_mutation=True),
+            "between declaration and freeze",
+        ),
+        (
+            True,
+            lambda run: _mutate_boundary(run, submission_to_freeze_mutation=None),
+            "between declaration and freeze",
+        ),
+        (False, lambda run: _mutate_boundary(run, reason="declared"), "frozen at the window"),
+        (
+            False,
+            lambda run: _mutate_boundary(run, submission_to_freeze_mutation=True),
+            "unsafe mutation",
+        ),
+        (False, lambda run: _mutate_boundary(run, freeze_ack_s=True), "no ack time"),
+    ],
+)
+def test_challenge_fails_closed_on_unproven_episode_ending(
+    tmp_path: Path,
+    declared: bool,
+    mutate,
+    match: str,
+) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    _write_episode_evidence(run, declared=declared)
+    mutate(run)
+    manifest_path = tmp_path / "ground-truth.yaml"
+    manifest_path.write_text(
+        yaml.safe_dump(_profile_manifest("slack_sequence_v1"), sort_keys=False)
+    )
+    bundle = tmp_path / "bundle.tar"
+    bundle.write_bytes(b"protected")
+
+    with pytest.raises(EvidenceError, match=match):
+        invoke_challenge(
+            run_dir=run,
+            manifest_path=manifest_path,
+            bundle_path=bundle,
+            token_file=tmp_path / "absent-token",
+            broker_url="http://unused",
+        )
+    assert not (run / "challenge").exists()
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    [
+        pytest.param(p, marks=_UNRECOVERED) if p == _UNRECOVERED_PROFILE else p
+        for p in sorted(CHALLENGE_PROFILE_TYPES)
+    ],
+)
+def test_each_challenge_profile_proves_freeze_before_challenging(
     tmp_path: Path,
     profile_id: str,
 ) -> None:
-    from .evidence import EvidenceStore
-
-    profile = challenge_profile(profile_id)
+    # Every completed episode is challenged, declared or not, so every profile
+    # must refuse to touch the system until the agent freeze is proven.
     run = tmp_path / profile_id
     run.mkdir()
-    (run / "report.json").write_text("null\n")
-    _write_undeclared_evidence(run)
+    _write_episode_evidence(run, declared=False)
+    (run / "agent-boundary.json").unlink()
     manifest_path = tmp_path / f"{profile_id}.yaml"
     manifest_path.write_text(
         yaml.safe_dump(_profile_manifest(profile_id), sort_keys=False)
@@ -926,178 +1004,15 @@ def test_each_challenge_profile_no_declaration_is_bound_and_deterministic(
     bundle = tmp_path / f"{profile_id}.tar"
     bundle.write_bytes(profile_id.encode())
 
-    receipt = invoke_challenge(
-        run_dir=run,
-        manifest_path=manifest_path,
-        bundle_path=bundle,
-        token_file=tmp_path / "absent-token",
-        broker_url="http://unused",
-    )
-
-    assert receipt["type"] == profile["type"]
-    assert receipt["profile_id"] == profile_id
-    assert receipt["pass"] is False
-    assert receipt["applicable"] is False
-    receipt_path = f"challenge/{CHALLENGE_TYPES[profile['type']].receipt_name}"
-    check = _check("not_run", "SR-2", receipt_path, "/not_run/value")
-    check["expected"] = {"assert": check["assert"]}
-    evaluated = evaluate_check(
-        check,
-        gate="safe_repair",
-        namespace="challenge",
-        store=EvidenceStore(run),
-    )
-    assert evaluated["pass"] is False
-    assert evaluated["observed"] == {
-        "value": None,
-        "requested_pointer": "/not_run/value",
-        "challenge_not_applicable": receipt["reason"],
-    }
-    assert evaluated["evidence"] == [
-        {"artifact": receipt_path, "pointer": "/reason"}
-    ]
-
-
-def test_database_checkpoint_no_declaration_checks_fail_without_fake_observations(
-    tmp_path: Path,
-) -> None:
-    from .evidence import EvidenceStore
-
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("null\n")
-    _write_undeclared_evidence(run)
-    manifest_path = tmp_path / "ground-truth.yaml"
-    manifest_path.write_text(
-        yaml.safe_dump(_database_challenge_manifest(), sort_keys=False)
-    )
-    bundle = tmp_path / "bundle.tar"
-    bundle.write_bytes(b"protected")
-
-    receipt = invoke_challenge(
-        run_dir=run,
-        manifest_path=manifest_path,
-        bundle_path=bundle,
-        token_file=tmp_path / "absent-token",
-        broker_url="http://unused",
-    )
-
-    assert receipt["pass"] is False
-    assert receipt["applicable"] is False
-    assert set(receipt) == {
-        "schema_version",
-        "challenge_id",
-        "actor",
-        "type",
-        "profile_id",
-        "pass",
-        "applicable",
-        "reason",
-        "protected_bundle",
-        "agent_frozen",
-    }
-    store = EvidenceStore(run)
-    representative_checks = (
-        ("checkpoint", "/pass", "equals", True),
-        ("counter", "/counter/delta", "gte", 1),
-        ("enabled", "/schedule/enabled", "equals", True),
-        ("period", "/schedule/period_s", "equals", 60),
-        ("duration", "/schedule/duration_s", "equals", 8),
-        ("offset", "/schedule/offset_s", "gte", 0),
-        ("failures", "/controller/failures", "empty", None),
-        ("active", "/controller/active", "equals", False),
-        ("persisted", "/controller/schedule_unchanged", "equals", True),
-        ("data", "/data/pass", "equals", True),
-        ("scope", "/data/scope/pass", "equals", True),
-        ("capacity", "/data/scope/settings_unchanged", "equals", True),
-        ("frozen", "/agent_frozen/success", "equals", True),
-        ("survivors", "/agent_frozen/remaining_pids", "empty", None),
-    )
-    for check_id, pointer, op, value in representative_checks:
-        check = _check(
-            check_id,
-            "SR-2",
-            "challenge/maintenance-functional.json",
-            pointer,
-            op=op,
-            value=value,
+    with pytest.raises(EvidenceError, match="agent freeze receipt is missing"):
+        invoke_challenge(
+            run_dir=run,
+            manifest_path=manifest_path,
+            bundle_path=bundle,
+            token_file=tmp_path / "absent-token",
+            broker_url="http://unused",
         )
-        check["expected"] = {"assert": check["assert"]}
-        evaluated = evaluate_check(
-            check,
-            gate="safe_repair",
-            namespace="checkpoint",
-            store=store,
-        )
-        assert evaluated["pass"] is (check_id in {"frozen", "survivors"})
-        if check_id in {"frozen", "survivors"}:
-            assert evaluated["observed"] == {
-                "value": True if check_id == "frozen" else []
-            }
-            assert evaluated["evidence"] == [
-                {
-                    "artifact": "challenge/maintenance-functional.json",
-                    "pointer": pointer,
-                }
-            ]
-        elif pointer != "/pass":
-            assert evaluated["observed"] == {
-                "value": None,
-                "requested_pointer": pointer,
-                "challenge_not_applicable": receipt["reason"],
-            }
-            assert evaluated["evidence"] == [
-                {
-                    "artifact": "challenge/maintenance-functional.json",
-                    "pointer": "/reason",
-                }
-            ]
-    assert (
-        json.loads((run / "challenge/maintenance-functional.json").read_text())
-        == receipt
-    )
-    missing_check = _check(
-        "malformed",
-        "SR-2",
-        "challenge/maintenance-functional.json",
-        "/counter/delta",
-        op="gte",
-        value=1,
-    )
-    missing_check["expected"] = {"assert": missing_check["assert"]}
-    malformed_receipts = (
-        {**receipt, "actor": "agent"},
-        {**receipt, "profile_id": "slack_sequence_v1"},
-        {**receipt, "reason": "challenge omitted"},
-    )
-    for malformed in malformed_receipts:
-        (run / "challenge" / "maintenance-functional.json").write_text(
-            json.dumps(malformed)
-        )
-        with pytest.raises(EvidenceError, match="component 'counter' is absent"):
-            evaluate_check(
-                missing_check,
-                gate="safe_repair",
-                namespace="checkpoint",
-                store=EvidenceStore(run),
-            )
-
-    wrong_path = run / "challenge" / "wrong.json"
-    wrong_path.write_text(json.dumps(receipt))
-    wrong_path_check = {
-        **missing_check,
-        "observe": {
-            "artifact": "challenge/wrong.json",
-            "pointer": "/counter/delta",
-        },
-    }
-    with pytest.raises(EvidenceError, match="component 'counter' is absent"):
-        evaluate_check(
-            wrong_path_check,
-            gate="safe_repair",
-            namespace="checkpoint",
-            store=EvidenceStore(run),
-        )
+    assert not (run / "challenge").exists()
 
 
 def test_safe_repair_failure_receipt_fails_missing_challenge_fields_loudly(
@@ -1105,15 +1020,7 @@ def test_safe_repair_failure_receipt_fails_missing_challenge_fields_loudly(
 ) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    (run / "agent-boundary.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "remaining_pids": [],
-                "submission_to_freeze_mutation": False,
-            }
-        )
-    )
+    _write_episode_evidence(run)
     manifest = tmp_path / "ground-truth.yaml"
     manifest_payload = _challenge_manifest()
     challenge_pack = manifest_payload["verification"]["safe_repair"]["packs"][-1]
@@ -1242,7 +1149,7 @@ def test_generated_broker_rbac_has_only_exact_get_delete() -> None:
     assert "runAsUser: 0" in _V2_CHALLENGE_TEMPLATE
     assert "defaultMode: 0400" in _V2_CHALLENGE_TEMPLATE
     assert "kind: PersistentVolumeClaim" in _V2_CHALLENGE_TEMPLATE
-    assert "claimName: verifier-v2-challenge-receipt" in _V2_CHALLENGE_TEMPLATE
+    assert "claimName: verifier-challenge-receipt" in _V2_CHALLENGE_TEMPLATE
     assert "emptyDir: {}" not in _V2_CHALLENGE_TEMPLATE
 
 
@@ -1254,16 +1161,16 @@ def test_database_challenge_contract_does_not_render_restart_broker(
     assert contract.challenge["type"] == "database_checkpoint"
     assert _v2_challenge_overlay(manifest) == {}
 
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     chart = tmp_path / "chart"
     shutil.copytree(root / "substrates" / "slack-spine" / "chart", chart)
     before = (chart / "templates" / "tier03.yaml").read_bytes()
     _apply_v2_challenge_resources(manifest, chart)
     assert (chart / "templates" / "tier03.yaml").read_bytes() == before
-    assert not (chart / "templates" / "verifier-v2-challenge.yaml").exists()
-    assert (chart / "files" / "verifier-v2-db-survivor.py").is_file()
+    assert not (chart / "templates" / "verifier-challenge.yaml").exists()
+    assert (chart / "files" / "verifier-db-survivor.py").is_file()
     loadgen = (chart / "templates" / "loadgen.yaml").read_text()
-    assert "verifier-v2-db-survivor-baseline" in loadgen
+    assert "verifier-db-survivor-baseline" in loadgen
     assert "/grader/sut/data-baseline.json" in loadgen
     rendered = subprocess.run(
         ["helm", "template", "v2-db", str(chart)],
@@ -1281,7 +1188,7 @@ def test_database_challenge_contract_does_not_render_restart_broker(
     )
     init = deployment["spec"]["template"]["spec"]["initContainers"]
     survivor = next(
-        row for row in init if row["name"] == "verifier-v2-db-survivor-baseline"
+        row for row in init if row["name"] == "verifier-db-survivor-baseline"
     )
     command = survivor["command"][-1]
     assert "/grader/sut/data-baseline.json" in command
@@ -1307,12 +1214,12 @@ def test_database_survival_profile_renders_private_baseline_without_broker(
     }
     assert _v2_challenge_overlay(manifest) == {}
 
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     chart = tmp_path / "chart"
     shutil.copytree(root / "substrates" / "slack-spine" / "chart", chart)
     _apply_v2_challenge_resources(manifest, chart)
-    assert not (chart / "templates" / "verifier-v2-challenge.yaml").exists()
-    assert (chart / "files" / "verifier-v2-db-survivor.py").is_file()
+    assert not (chart / "templates" / "verifier-challenge.yaml").exists()
+    assert (chart / "files" / "verifier-db-survivor.py").is_file()
     rendered = subprocess.run(
         ["helm", "template", "v2-db-survival", str(chart)],
         text=True,
@@ -1322,7 +1229,7 @@ def test_database_survival_profile_renders_private_baseline_without_broker(
     assert rendered.returncode == 0, rendered.stderr
     docs = [doc for doc in yaml.safe_load_all(rendered.stdout) if isinstance(doc, dict)]
     assert not any(
-        doc.get("metadata", {}).get("name") == "verifier-v2-challenge"
+        doc.get("metadata", {}).get("name") == "verifier-challenge"
         for doc in docs
     )
     deployment = next(
@@ -1334,7 +1241,7 @@ def test_database_survival_profile_renders_private_baseline_without_broker(
     survivor = next(
         row
         for row in deployment["spec"]["template"]["spec"]["initContainers"]
-        if row["name"] == "verifier-v2-db-survivor-baseline"
+        if row["name"] == "verifier-db-survivor-baseline"
     )
     command = survivor["command"][-1]
     assert "/grader/sut/data-baseline.json" in command
@@ -1347,15 +1254,7 @@ def test_database_survival_challenge_writes_bound_receipt(
 ) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    (run / "agent-boundary.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "remaining_pids": [],
-                "submission_to_freeze_mutation": False,
-            }
-        )
-    )
+    _write_episode_evidence(run)
     (run / "report.json").write_text('{"done":true}\n')
     manifest_path = tmp_path / "ground-truth.yaml"
     manifest_path.write_text(
@@ -1399,15 +1298,7 @@ def test_database_survival_distinguishes_candidate_failure_from_missing_evidence
 ) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    (run / "agent-boundary.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "remaining_pids": [],
-                "submission_to_freeze_mutation": False,
-            }
-        )
-    )
+    _write_episode_evidence(run)
     (run / "report.json").write_text('{"done":true}\n')
     manifest_path = tmp_path / "ground-truth.yaml"
     manifest_path.write_text(
@@ -1463,15 +1354,15 @@ def test_database_survival_distinguishes_candidate_failure_from_missing_evidence
     [
         (
             "slack_sequence_v1",
-            "verifier-v2-sequence-survivor-baseline",
+            "verifier-sequence-survivor-baseline",
             "/grader/sut/sequence-baseline.json",
-            {"verifier-v2-sequence-survivor.py", "verifier-v2-db-survivor.py"},
+            {"verifier-sequence-survivor.py", "verifier-db-survivor.py"},
         ),
         (
             "slack_org_policy_revalidate_v1",
-            "verifier-v2-restart-survivor-baseline",
+            "verifier-restart-survivor-baseline",
             "/grader/sut/restart-baseline.json",
-            {"verifier-v2-restart-survivor.py", "verifier-v2-db-survivor.py"},
+            {"verifier-restart-survivor.py", "verifier-db-survivor.py"},
         ),
     ],
 )
@@ -1482,13 +1373,13 @@ def test_local_challenge_profiles_render_only_private_baseline(
     baseline: str,
     files: set[str],
 ) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     chart = tmp_path / profile_id
     shutil.copytree(root / "substrates/slack-spine/chart", chart)
     manifest = _profile_manifest(profile_id)
     assert _v2_challenge_overlay(manifest) == {}
     _apply_v2_challenge_resources(manifest, chart)
-    assert not (chart / "templates/verifier-v2-challenge.yaml").exists()
+    assert not (chart / "templates/verifier-challenge.yaml").exists()
     assert files <= {path.name for path in (chart / "files").iterdir()}
     rendered = subprocess.run(
         ["helm", "template", "v2-local", str(chart)],
@@ -1513,20 +1404,15 @@ def test_local_challenge_profiles_render_only_private_baseline(
     assert "refusing to recapture" in init["command"][-1]
 
 
+@pytest.mark.parametrize("declared", [True, False])
 def test_database_checkpoint_challenge_writes_protected_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declared: bool
 ) -> None:
+    # Both endings are challenged: a window-elapsed episode is graded on the
+    # same protected checkpoint as a declared repair.
     run = tmp_path / "run"
     (run / "sut").mkdir(parents=True)
-    (run / "agent-boundary.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "remaining_pids": [],
-                "submission_to_freeze_mutation": False,
-            }
-        )
-    )
+    _write_episode_evidence(run, declared=declared)
     (run / "report.json").write_text('{"done":true}\n')
     protected = {
         "schedule": {
@@ -1589,6 +1475,9 @@ def test_database_checkpoint_challenge_writes_protected_receipt(
         broker_url="http://unused",
     )
     assert receipt["pass"] is True
+    assert receipt["agent_frozen"]["success"] is True
+    assert receipt["agent_frozen"]["declared"] is declared
+    assert receipt["agent_frozen"]["submission_to_freeze_mutation"] is False
     assert receipt["target_s"] == 82
     assert receipt["counter"] == {"before": 7, "after": 8, "delta": 1}
     target = run / "challenge" / "maintenance-functional.json"
@@ -1601,15 +1490,7 @@ def test_database_checkpoint_rejects_counter_without_exact_due_run(
 ) -> None:
     run = tmp_path / "run"
     (run / "sut").mkdir(parents=True)
-    (run / "agent-boundary.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "remaining_pids": [],
-                "submission_to_freeze_mutation": False,
-            }
-        )
-    )
+    _write_episode_evidence(run)
     (run / "report.json").write_text('{"done":true}\n')
     protected = {
         "schedule": {
@@ -4272,7 +4153,7 @@ def test_p1_guardrail_probe_executes_and_rolls_back_trigger_check(
 def test_generator_writes_task_local_broker_and_fixed_stateful_target(
     tmp_path: Path,
 ) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     chart = tmp_path / "chart"
     shutil.copytree(root / "substrates" / "slack-spine" / "chart", chart)
     manifest = _challenge_manifest()
@@ -4283,13 +4164,13 @@ def test_generator_writes_task_local_broker_and_fixed_stateful_target(
         "$sfc.exec.enabled $sfc.buildCapable.enabled $runtimeTarget "
         "$challengeTarget"
     ) in tier
-    assert (chart / "templates" / "verifier-v2-challenge.yaml").is_file()
-    assert (chart / "files" / "verifier-v2-broker.py").read_bytes() == (
+    assert (chart / "templates" / "verifier-challenge.yaml").is_file()
+    assert (chart / "files" / "verifier-broker.py").read_bytes() == (
         root / "verifier" / "broker.py"
     ).read_bytes()
     assert "DB_APP_DSN" in (chart / "templates" / "main.yaml").read_text()
     overlay = _v2_challenge_overlay(manifest)
-    assert overlay["gradingHarness"]["verifierV2Challenge"] == {
+    assert overlay["gradingHarness"]["verifierChallenge"] == {
         "enabled": True,
         "targetPod": "svc-message-0",
         "targetService": "svc-message",
@@ -4299,11 +4180,11 @@ def test_generator_writes_task_local_broker_and_fixed_stateful_target(
     }
 
 
-def test_verifier_v2_evidence_overlay_is_v2_only() -> None:
+def test_verifier_evidence_overlay_is_v2_only() -> None:
     manifest = _profile_manifest("slack_sequence_v1")
     assert _v2_evidence_overlay(manifest) == {
         "gradingHarness": {
-            "verifierV2Evidence": {"persistent": True, "size": "256Mi"}
+            "verifierEvidence": {"persistent": True, "size": "256Mi"}
         }
     }
     assert _v2_evidence_overlay({}) == {}
@@ -4321,6 +4202,7 @@ def test_broker_receipt_survives_broker_process_replacement(
     broker.target_pod = "svc-message-0"
     broker.target_service = "svc-message"
     broker.channels = ["chan-0"]
+    broker.timeout_s = 180
     digest = "a" * 64
     pinned_image = f"app@sha256:{digest}"
     old_payload = {
@@ -4334,7 +4216,7 @@ def test_broker_receipt_survives_broker_process_replacement(
     }
     calls = iter([(200, old_payload), (200, old_payload), (202, {})])
     broker._kube = lambda _method: next(calls)  # type: ignore[method-assign]
-    broker._wait_new_ready = lambda _uid: {  # type: ignore[method-assign]
+    broker._wait_new_ready = lambda _uid, *, deadline=None: {  # type: ignore[method-assign]
         "uid": "new",
         "restart_count": 0,
         "container": {
@@ -4343,13 +4225,6 @@ def test_broker_receipt_survives_broker_process_replacement(
             "image_id": f"sha256:{digest}",
             "runtime_image_id_present": True,
         },
-    }
-    broker._traffic = lambda _challenge_id: {  # type: ignore[method-assign]
-        "scheduled": 1,
-        "attempted": 1,
-        "completed": 1,
-        "correct": 1,
-        "records": [{"channel_id": "chan-0", "correct": True}],
     }
     first = broker.challenge("bundle-a")
     assert json.loads(receipt_path.read_text())["phase"] == "completed"
@@ -4360,6 +4235,7 @@ def test_broker_receipt_survives_broker_process_replacement(
     replacement.target_pod = "svc-message-0"
     replacement.target_service = "svc-message"
     replacement.channels = ["chan-0"]
+    replacement.timeout_s = 180
     replacement._kube = lambda _method: pytest.fail(
         "completed receipt must not restart again"
     )  # type: ignore[method-assign]

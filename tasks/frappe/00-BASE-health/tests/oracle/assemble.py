@@ -656,6 +656,33 @@ def build_lock_state(*, idle_in_txn_holders: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+# --- verdict -> harbor reward mapping --------------------------------------------
+# Kept for the v1-oracle base-health capture harnesses, which stamp this module
+# as tests/oracle/assemble.py; v2 tasks grade with verifier/reward.py instead.
+
+
+def verdict_to_rewards(verdict: dict[str, Any]) -> dict[str, float]:
+    """Map the oracle verdict dict to the reward dict per the contract."""
+    try:
+        overall = verdict["overall"]
+        gate1_pass = verdict["gate1"]["pass"]
+        gate2_pass = verdict["gate2"]["pass"]
+        minimality_pass = verdict["minimality"]["pass"]
+        db_state_pass = verdict["db_state"]["pass"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(
+            "slack-spine verifier: oracle verdict is missing expected keys: "
+            f"{exc}; verdict={verdict!r}"
+        ) from exc
+    return {
+        "reward": 1.0 if overall == "PASS" else 0.0,
+        "gate1": 1.0 if gate1_pass else 0.0,
+        "gate2": 1.0 if gate2_pass else 0.0,
+        "minimality": 1.0 if minimality_pass else 0.0,
+        "db_state": 1.0 if db_state_pass else 0.0,
+    }
+
+
 # --- serialization helper ---------------------------------------------------------
 
 

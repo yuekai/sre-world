@@ -16,12 +16,12 @@ def _restore_evaluator_imports():
         name: module
         for name, module in sys.modules.items()
         if name in {"oracle", "verifier"}
-        or name.startswith(("oracle.", "verifier_v2."))
+        or name.startswith(("oracle.", "verifier."))
     }
     yield
     for name in tuple(sys.modules):
         if name in {"oracle", "verifier"} or name.startswith(
-            ("oracle.", "verifier_v2.")
+            ("oracle.", "verifier.")
         ):
             del sys.modules[name]
     sys.modules.update(original_modules)

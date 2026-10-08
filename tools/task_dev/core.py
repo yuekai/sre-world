@@ -736,6 +736,20 @@ def _change_endpoints(
     return ((old_state, change.path), (new_state, change.path))
 
 
+# v1 oracle packages that still live beside the v2 verifier under verifier/.
+_V1_ORACLE_PACKAGES = {"oracle", "oracle_p1", "oracle_temporal", "oracle_maintenance"}
+
+
+def _is_v2_verifier_path(path: str) -> bool:
+    """A v2 verifier source path (verifier/ minus the v1 oracle subpackages)."""
+    parts = PurePosixPath(path).parts
+    return (
+        len(parts) >= 2
+        and parts[0] == "verifier"
+        and parts[1] not in _V1_ORACLE_PACKAGES
+    )
+
+
 def _verifier_endpoint_impact(
     state: State,
     manifests: dict[str, dict[str, Any]],
@@ -748,7 +762,7 @@ def _verifier_endpoint_impact(
         path.startswith("verifier/test_") and path.endswith(".py")
     ):
         return None
-    if path.startswith("verifier/"):
+    if _is_v2_verifier_path(path):
         return (
             "verifier-implementation",
             {
@@ -1254,7 +1268,7 @@ def classify(
             path.startswith("verifier/test_") and path.endswith(".py")
         ):
             global_kinds.add("repository-infrastructure")
-        elif path.startswith("verifier/"):
+        elif _is_v2_verifier_path(path):
             global_kinds.add("verifier-implementation")
         elif verifier_endpoint_seen:
             # Endpoint ownership was computed against both repository states

@@ -6,7 +6,7 @@ from tools import local_run, substrate
 
 def test_frappe_local_run_enables_kind_storage() -> None:
     sub = substrate.load("frappe")
-    task = sub.tasks_dir / "03-F1-connection-cap"
+    task = sub.tasks_dir / "07-desk-and-queue-outage"
 
     _, helm_values = local_run._local_overrides(sub, task, build_layers=False)
 
@@ -19,7 +19,7 @@ def test_frappe_local_run_enables_kind_storage() -> None:
 
 def test_frappe_local_run_uses_k3s_compatible_kind_service_cidr() -> None:
     command, _ = local_run.build_harbor_cmd(
-        "tasks/frappe/03-F1-connection-cap",
+        "tasks/frappe/07-desk-and-queue-outage",
         "oracle",
         job_name="frappe-local-contract",
         out=Path("jobs"),
@@ -59,13 +59,13 @@ def test_repo_root_is_importable_for_every_task_using_the_in_repo_environment() 
     capture-base-health trial died inside harbor's importer with
     "No module named 'tools'" before a cluster was ever created.
 
-    Both frappe tasks matter here: 03-F1 is v2, 00-BASE-health is not, and the
+    Both frappe tasks matter here: 07-desk-and-queue-outage is v2, 00-BASE-health is not, and the
     non-v2 one is the case that had no coverage.
     """
     repo_root = str(local_run.REPO_ROOT)
     for task in (
         "tasks/frappe/00-BASE-health",       # not v2 -- the regression case
-        "tasks/frappe/03-F1-connection-cap",  # v2
+        "tasks/frappe/07-desk-and-queue-outage",  # v2
         "tasks/slack-spine/06-F3-split-sequencer",
     ):
         roots = _pythonpath_roots(task)

@@ -138,36 +138,9 @@ _FRAPPE_SETUP_360_RESIZE_PENDING = (
     "--agent-setup-sec 300 to see the fleet pass under the old assumption."
 )
 
-_FRAPPE_360_WAIVED = (
-    "03-F1-connection-cap",
-    "03-QE1-rq-eviction-trap",
-    "03-U1-user-conn-cap",
-    "03-deletes-refused",
-    "03-edits-refused",
-    "03-mariadb-read-only",
-    "03-new-records-refused",
-    "03-readonly-flag-fog",
-    "03-saves-fail-and-refusals",
-    "06-job-submissions-fail",
-    "06-jobs-rejected-on-submit",
-    "06-queue-lag-bait",
-    "06-queue-write-guard",
-    "06-saves-refused-and-jobs-rejected",
-    "06-writes-and-jobs-fail",
-    "07-connections-and-jobs-fail",
-    "07-connections-and-queue-oom",
-    "07-deletes-and-jobs-fail",
-    "07-deletes-and-queue-oom",
-    "07-deletes-refused-and-jobs-stalled",
-    "07-desk-and-queue-oom",
-    "07-desk-and-queue-outage",
-    "07-edits-and-queue-oom",
-    "07-jobs-never-finish",
-    "07-new-records-and-jobs-fail",
-    "07-new-records-and-queue-oom",
-    "07-refused-pages-and-stalled-jobs",
-    "07-writes-and-queue-oom",
-)
+# Emptied in the 2026-10 reconstruction: every listed task was retired or now
+# passes (a) under episode-start anchoring (agent_window_s).
+_FRAPPE_360_WAIVED: tuple[str, ...] = ()
 
 # The ten ERP tasks below are in flight on PRs #437, #431 and #426. They were
 # authored to the same 900 + 300 + 1800 + 30 = 3030 convention as the 28 above
@@ -178,21 +151,9 @@ _FRAPPE_360_WAIVED = (
 # #437: declare_deadline_s 4830 -> 4890 rewrites environment/task.values.yaml and
 # moves the task's layer_fingerprint), so they must move WITH the fleet or not at
 # all. Listed one id at a time, not as a pattern, so each expires explicitly.
-_FRAPPE_360_WAIVED_POSTDATING = (
-    # PR #437 — false-alarm twins of the saturated 03-* singles
-    "03-saves-fail-reported",
-    "03-pages-refused-reported",
-    # PR #431 — false-alarm twins, batch 3
-    "03-spike-500s-reported",
-    "03-maint-saves-reported",
-    "06-jobs-fail-reported",
-    "06-jobs-500s-reported",
-    # PR #426 — k=2 compounds, batch 1
-    "07-edits-and-jobs-fail",
-    "07-new-records-and-conn-cap",
-    "07-edits-and-user-cap",
-    "07-deletes-and-user-cap",
-)
+# Emptied in the 2026-10 reconstruction: every listed task was retired or now
+# passes (a) under episode-start anchoring (agent_window_s).
+_FRAPPE_360_WAIVED_POSTDATING: tuple[str, ...] = ()
 
 _FRAPPE_SETUP_360_RESIZE_PENDING_POSTDATING = (
     _FRAPPE_SETUP_360_RESIZE_PENDING
@@ -218,23 +179,6 @@ WAIVERS.update(
 )
 WAIVERS.update(
     {
-        "slack-spine/13-P1-distractor-volume-shell": Waiver(
-            frozenset({"a"}),
-            "release-tier task whose fault ships as a PUBLISHED image layer: the "
-            "committed declare_deadline_s=3630 is baked into a published, "
-            "already-calibrated artifact, so re-sizing it here would block a "
-            "release-tier task on an unrelated PR. 3600 s budget + 300 s readiness "
-            "needs 4260 (360 setup) / 4200 (300 setup); it runs 3630 and relies on "
-            "the agent declaring early. Re-size it with its next image publication.",
-        ),
-        "slack-spine/09-I1-seq-lock-leak": Waiver(
-            frozenset({"a"}),
-            "known thin margin, shipped deliberately: a 1500 s budget against a "
-            "1530 s deadline on the substrate-inherited write_eval profile. The "
-            "profile is SHARED, so widening the window re-fingerprints every task "
-            "that selects it; the task ships on measurement that its agents declare "
-            "well inside the window.",
-        ),
         "slack-spine/10-SV1-pool-exhaustion-shell": Waiver(
             frozenset({"a"}),
             "non-hosted scaffold (INDEX.non_hosted): omitted from --all stamping, "

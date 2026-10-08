@@ -2,15 +2,16 @@
 # render_checks.sh — Frappe render assertions (manifest checks.render).
 #
 # Substrate-owned: these greps know this chart's rendered shapes. Asserts the
-# vendored-chart pin discipline and that the 03-F1 MariaDB max_connections
-# fault ACTUALLY injects (and only once), while the healthy chart keeps the
-# sized default. Prints one ✓/✗ line per assertion; exits non-zero on any
+# vendored-chart pin discipline and that a shipped task's faults land where
+# designed (07-desk-and-queue-outage: a rendered redis-queue flag plus a MariaDB
+# fault the loadgen injects at runtime), while the healthy chart keeps the sized
+# default. Prints one ✓/✗ line per assertion; exits non-zero on any
 # failure (validate.sh wraps the whole script as one gate check).
 set -uo pipefail
 
 SUB="$(cd "$(dirname "$0")/.." && pwd)"            # substrates/frappe
 ROOT="$(cd "$SUB/../.." && pwd)"                    # repo root
-TASK="$ROOT/tasks/$(basename "$SUB")/03-F1-connection-cap"
+TASK="$ROOT/tasks/$(basename "$SUB")/07-desk-and-queue-outage"  # 03-F1 was retired
 FAIL=0
 ok()  { echo "    ✓ $1"; }
 bad() { echo "    ✗ $1"; FAIL=1; }
@@ -27,22 +28,28 @@ else
   bad "erpnext chart pin mismatch: wrapper=$wrapper_pin vendored=$vendored_pin"
 fi
 
-# The fault injects: rendered my.cnf carries max_connections=10 exactly once.
-out=$(cd "$TASK/environment" \
-      && helm template t chart -f task.values.yaml 2>/dev/null \
-      | grep -c '^\s*max_connections=10$')
-[ "${out:-0}" -eq 1 ] && ok "faulted render: max_connections=10 exactly once" \
-                      || bad "faulted render: expected exactly one max_connections=10, got ${out:-0}"
+# The config leg renders; the MariaDB leg stays out of the render (the loadgen
+# applies it at runtime), so my.cnf must still carry the sized default.
+faulted=$(cd "$TASK/environment" && helm template t chart -f task.values.yaml 2>/dev/null)
+out=$(printf '%s\n' "$faulted" | grep -c -- '--min-replicas-to-write')
+[ "${out:-0}" -ge 1 ] && ok "faulted render: redis-queue min-replicas-to-write leg present" \
+                      || bad "faulted render: redis-queue --min-replicas-to-write leg missing"
+out=$(printf '%s\n' "$faulted" | grep -c 'name: MARIADB_FAULT_KIND')
+[ "${out:-0}" -eq 1 ] && ok "faulted render: runtime MariaDB fault wired to the loadgen" \
+                      || bad "faulted render: expected one MARIADB_FAULT_KIND env, got ${out:-0}"
+out=$(printf '%s\n' "$faulted" | grep -c '^\s*max_connections=200$')
+[ "${out:-0}" -eq 1 ] && ok "faulted render: no MariaDB fault baked into my.cnf" \
+                      || bad "faulted render: expected the sized max_connections=200 once, got ${out:-0}"
 
-# The database-focused profile does not enqueue prepared reports, so the hosted
-# footprint disables both the long worker and scheduler at the actual vendored
-# chart value paths (worker.*, not root-level keys).
+# The jobs profile runs prepared reports on exactly one supervised long worker
+# and disables the scheduler, at the actual vendored chart value paths
+# (worker.*, not root-level keys).
 out=$(cd "$TASK/environment" \
       && helm template t chart -f task.values.yaml \
         --show-only charts/erpnext/templates/deployment-worker-long.yaml 2>/dev/null \
       | awk '/^  replicas:/{print $2; exit}')
-[ "${out:-}" = 0 ] && ok "faulted render: unrelated long worker disabled" \
-                    || bad "faulted render: expected long worker replicas=0, got ${out:-missing}"
+[ "${out:-}" = 1 ] && ok "faulted render: one long worker for queued jobs" \
+                    || bad "faulted render: expected long worker replicas=1, got ${out:-missing}"
 out=$(cd "$TASK/environment" \
       && helm template t chart -f task.values.yaml \
         --show-only charts/erpnext/templates/deployment-scheduler.yaml 2>/dev/null \

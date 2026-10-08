@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import EvidenceError
-from .common import read_json, report_submitted
+from .common import read_json, repair_declared
 
 
 def materialize(run_dir: Path, _manifest: dict[str, Any]) -> dict[str, Any]:
-    submitted = report_submitted(run_dir)
+    submitted = repair_declared(run_dir)
     path = run_dir / "agent-boundary.json"
     if not submitted:
         return {
