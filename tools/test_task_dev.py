@@ -1092,6 +1092,21 @@ def test_plain_verifier_change_skips_v2_tasks_outside_their_closure(
     assert "verifier-implementation" in impact["affected_tasks"][0]["change_classes"]
 
 
+def test_contract_from_an_older_grading_model_counts_as_affected(repo: Path) -> None:
+    """A base-side v2 contract the current verifier rejects must not crash
+    classification; its closure is unknowable, so the path counts as used."""
+
+    _make_v2_outcome(repo, "one")
+    gt_path = repo / "scenarios/alpha/one/ground-truth.yaml"
+    gt = yaml.safe_load(gt_path.read_text())
+    gt["verification"]["materializers"] = ["legacy_outcome"]  # retired name
+    _write(gt_path, yaml.safe_dump(gt, sort_keys=False))
+    state = State(repo, WORKTREE)
+
+    assert _uses_v2_verifier_source(state, "alpha", "one", "verifier/providers/outcome.py")
+    assert _uses_oracle_source(state, "alpha", "one", "verifier/oracle_p1/runtime_state.py")
+
+
 def _commit_temporal_consumer(repo: Path, sid: str = "one") -> Path:
     gt_path = repo / f"scenarios/alpha/{sid}/ground-truth.yaml"
     gt = yaml.safe_load(gt_path.read_text())

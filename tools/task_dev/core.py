@@ -690,10 +690,7 @@ def _uses_oracle_source(
         return False
     verification = gt.get("verification")
     if isinstance(verification, dict) and verification.get("version") == 2:
-        from verifier.closure import selected_fingerprint_relpaths
-        from verifier.contract import load_contract
-
-        return path in set(selected_fingerprint_relpaths(load_contract(gt)))
+        return _v2_closure_selects(gt, path)
     return True
 
 
@@ -711,10 +708,27 @@ def _uses_v2_verifier_source(
     verification = gt.get("verification")
     if not isinstance(verification, dict) or verification.get("version") != 2:
         return False
+    return _v2_closure_selects(gt, path)
+
+
+def _v2_closure_selects(gt: dict[str, Any], path: str) -> bool:
+    """Whether a v2 contract's closure selects ``path``; True if unknowable.
+
+    The base side of a diff can hold contracts written for an older grading
+    model (the Sep 19 history names materializers the current verifier
+    rejects). Their closure cannot be computed with today's verifier, so count
+    the path as used: over-reporting impact is safe, crashing the classifier
+    is not.
+    """
     from verifier.closure import selected_fingerprint_relpaths
     from verifier.contract import load_contract
+    from verifier.errors import ContractError
 
-    return path in set(selected_fingerprint_relpaths(load_contract(gt)))
+    try:
+        contract = load_contract(gt)
+    except ContractError:
+        return True
+    return path in set(selected_fingerprint_relpaths(contract))
 
 
 def _change_endpoints(
