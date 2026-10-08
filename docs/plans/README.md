@@ -10,3 +10,4 @@ Known debt that no plan owns yet lives in [tech-debt.md](tech-debt.md).
 | Plan | Status |
 |---|---|
 | [2026-10-07-arena-parity.md](2026-10-07-arena-parity.md) | active |
+| [2026-10-07-kind-calico.md](2026-10-07-kind-calico.md) | completed |

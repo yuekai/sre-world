@@ -294,7 +294,9 @@ To run a generated task exactly as hosted (its digest-pinned images, not `:dev`
 builds) on a laptop, use the repo's Kind environment. It creates the cluster with
 the k3s service subnet the chart pins (`agentDnsFilter` uses `10.43.0.53`); the
 stock `-e helm` environment uses `10.96.0.0/16` and the install fails with
-"failed to allocate IP 10.43.0.53":
+"failed to allocate IP 10.43.0.53". It also replaces kindnet with a pinned
+Calico, because kindnet drops replies to pods under the chart's Ingress
+NetworkPolicies (docs/plans/2026-10-07-kind-calico.md):
 
 ```bash
 PYTHONPATH="$PWD" uv run harbor run -p tasks/slack-spine/06-F3-split-sequencer \
@@ -308,13 +310,10 @@ PYTHONPATH="$PWD" uv run harbor run -p tasks/slack-spine/06-F3-split-sequencer \
   VM at least 8 CPUs and 16 GB. Emulated bring-up is slow, hence the longer
   `helm_timeout` (pods otherwise miss readiness before Helm gives up).
 - `ghcr.io/yuekai/sre-world/*` packages must be public for a cluster to pull them
-  anonymously (GitHub UI → package settings).
-- **Known issue (2026-10):** Slack tasks do not yet come up on Kind. Their
-  telemetry NetworkPolicies (`obs.yaml`, e.g. `postgres-exporter-ingress`) are
-  written for hosted k3s; under Kind's kindnet enforcement the exporter's
-  readiness probe and DNS replies are dropped and Helm hits the 600 s progress
-  deadline. Use the hosted path (§7) until this is resolved
-  (docs/plans/tech-debt.md).
+  anonymously (GitHub UI → package settings). Slack and codex-tools are; Frappe
+  and Saleor are not yet.
+- Cluster bring-up downloads the Calico manifest and its images, so the host
+  needs internet access.
 
 ## 8. Troubleshooting
 

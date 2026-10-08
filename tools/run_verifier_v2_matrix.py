@@ -21,6 +21,8 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -64,6 +66,16 @@ _SLACK_SPINE_KIND_CONFIG = (
     REPO_ROOT / "substrates" / "slack-spine" / "checks" / "kind_surface_config.yaml"
 )
 _SLACK_SPINE_SERVICE_SUBNET = "10.43.0.0/16"
+_SLACK_SPINE_POD_SUBNET = "10.42.0.0/16"
+# kindnet drops replies to pods under an Ingress NetworkPolicy, so the trusted
+# Kind cluster runs Calico (docs/plans/2026-10-07-kind-calico.md). Pinned by
+# content: a moved tag must fail the bring-up, not change the network silently.
+_CALICO_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/calico.yaml"
+)
+_CALICO_MANIFEST_SHA256 = (
+    "9382d2b27a76f40c170454b408653e6d71e2205ef0aef069e942bb690e7381d0"
+)
 SLACK_SPINE_KIND_ENVIRONMENT = (
     "tools.run_verifier_v2_matrix:SlackSpineKindHelmEnvironment"
 )
@@ -432,12 +444,15 @@ def _load_slack_spine_kind_config() -> dict[str, Any]:
         or config.get("kind") != "Cluster"
         or config.get("apiVersion") != "kind.x-k8s.io/v1alpha4"
         or observed_subnet != _SLACK_SPINE_SERVICE_SUBNET
+        or networking.get("podSubnet") != _SLACK_SPINE_POD_SUBNET
+        or networking.get("disableDefaultCNI") is not True
     ):
         _die(
             "trusted slack-spine Kind config is invalid: expected kind Cluster, "
-            "apiVersion kind.x-k8s.io/v1alpha4, and serviceSubnet "
-            f"{_SLACK_SPINE_SERVICE_SUBNET!r}; observed_type="
-            f"{type(config).__name__}"
+            "apiVersion kind.x-k8s.io/v1alpha4, serviceSubnet "
+            f"{_SLACK_SPINE_SERVICE_SUBNET!r}, podSubnet "
+            f"{_SLACK_SPINE_POD_SUBNET!r} and disableDefaultCNI true; "
+            f"observed_type={type(config).__name__}"
         )
     return config
 
@@ -536,7 +551,13 @@ class SlackSpineKindLauncher(KindLauncher):
 
     def create_cmd(self) -> list[str]:
         _load_slack_spine_kind_config()
-        return [*super().create_cmd(), "--config", str(_SLACK_SPINE_KIND_CONFIG)]
+        command = super().create_cmd()
+        # The config disables kindnet, so the node cannot go Ready until the
+        # environment installs Calico; kind's --wait would only burn its timeout.
+        if "--wait" in command:
+            index = command.index("--wait")
+            del command[index : index + 2]
+        return [*command, "--config", str(_SLACK_SPINE_KIND_CONFIG)]
 
 
 class SlackSpineKindHelmEnvironment(HelmEnvironment):
@@ -567,6 +588,39 @@ class SlackSpineKindHelmEnvironment(HelmEnvironment):
             with_kubeconfig=True,
         )
         _validate_observed_kind_service_ip(result.stdout)
+        await self._install_calico()
+
+    async def _install_calico(self) -> None:
+        """Install the pinned Calico manifest and wait for a Ready node."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "calico.yaml"
+            with urllib.request.urlopen(_CALICO_MANIFEST_URL, timeout=60) as response:
+                manifest.write_bytes(response.read())
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            if digest != _CALICO_MANIFEST_SHA256:
+                raise RuntimeError(
+                    f"Calico manifest digest mismatch: url={_CALICO_MANIFEST_URL}, "
+                    f"expected={_CALICO_MANIFEST_SHA256}, observed={digest}"
+                )
+            host_manifest = f"/tmp/hb-calico-{uuid.uuid4().hex}.yaml"
+            await self._stage_file_to_host(manifest, host_manifest)
+        try:
+            await self._run_host(
+                ["kubectl", "apply", "-f", host_manifest],
+                with_kubeconfig=True,
+                timeout_sec=120,
+            )
+        finally:
+            await self._run_host(
+                ["rm", "-f", host_manifest], with_kubeconfig=False, check=False
+            )
+        for argv in (
+            ["kubectl", "-n", "kube-system", "rollout", "status",
+             "daemonset/calico-node", "--timeout=600s"],
+            ["kubectl", "wait", "--for=condition=Ready", "node", "--all",
+             "--timeout=300s"],
+        ):
+            await self._run_host(argv, with_kubeconfig=True, timeout_sec=900)
 
     # Cap the per-failure fan-out: a wholly broken release can leave every pod
     # not-Ready, and an unbounded dump would bury the first (usually causal) one.
