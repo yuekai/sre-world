@@ -453,6 +453,20 @@ in_main sh -ceu '
   done
 '
 
+# Harbor's environment healthcheck pins the episode clock with an authenticated
+# POST before the agent runs; until then the loadgen answers verifier reads with
+# 500 ("episode clock was not pinned"). Do the same, retrying while bring-up
+# finishes, so the read below sees the real verifier view.
+kubectl -n "$NS" exec "$main_pod" -c main -- sh -ceu '
+  token="$(cat /run/verifier/grader-access/token)"
+  deadline=$(( $(date +%s) + 180 ))
+  until curl -fsS -o /dev/null -X POST \
+      -H "X-SRE-World-Grader-Access: $token" http://loadgen:9100/grader/episode-start; do
+    [ "$(date +%s)" -lt "$deadline" ] || exit 1
+    sleep 3
+  done
+' || fail "verifier could not pin the episode clock (POST /grader/episode-start)"
+
 # The verifier runs as root after the agent phase and can retrieve authenticated
 # artifacts, while the agent-facing request above cannot reveal their state.
 verifier_code="$(kubectl -n "$NS" exec "$main_pod" -c main -- sh -ceu '
