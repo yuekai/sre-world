@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
@@ -29,6 +30,7 @@ CHART = REPO_ROOT / "substrates" / "slack-spine" / "chart"
 POLICY = "postgres-exporter-ingress"
 AGNHOST = "registry.k8s.io/e2e-test-images/agnhost:2.53"
 PEER_PORT = 8080
+SETTLE_S = 30  # how long a pass-expected check may wait for Calico to converge
 _FIX = (
     "The trusted Kind cluster no longer enforces NetworkPolicy the way the chart "
     "assumes; task bring-ups will time out. Check the CNI install in "
@@ -123,20 +125,35 @@ def check(cluster: Cluster, policy: dict) -> list[tuple[str, bool]]:
         return cluster.ok(["kubectl", "exec", src, "--", "/agnhost", "connect", dst,
                            "--timeout=5s"])
 
-    return [
+    def eventually(probe) -> bool:
+        # Calico programs a new pod into a policy's peer set asynchronously, so a
+        # check that traffic gets THROUGH may fail once right after Ready. Only
+        # pass-expected checks retry; the deny check below runs once, last.
+        deadline = time.monotonic() + SETTLE_S
+        while True:
+            if probe():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(2)
+
+    results = [
         ("kubelet readiness probe reaches the policed pod",
          cluster.ok(["kubectl", "wait", "--for=condition=Ready", "pod/policed",
                      "--timeout=120s"])),
         ("DNS replies reach the policed pod",
-         cluster.ok(["kubectl", "exec", "policed", "--", "nslookup",
-                     "kubernetes.default.svc.cluster.local"])),
+         eventually(lambda: cluster.ok(["kubectl", "exec", "policed", "--", "nslookup",
+                                        "kubernetes.default.svc.cluster.local"]))),
         ("replies to the policed pod's own connections get back",
-         connect("policed", f"{peer}:{PEER_PORT}")),
-        ("an unlabelled pod is blocked from the policed port",
-         not connect("peer", f"{policed}:{port}")),
+         eventually(lambda: connect("policed", f"{peer}:{PEER_PORT}"))),
         ("the policy's allowed peer reaches the policed port",
-         connect("allowed", f"{policed}:{port}")),
+         eventually(lambda: connect("allowed", f"{policed}:{port}"))),
     ]
+    # After the allowed peer gets through, the policy is programmed, so a single
+    # attempt here cannot pass merely because enforcement has not started yet.
+    results.append(("an unlabelled pod is blocked from the policed port",
+                    not connect("peer", f"{policed}:{port}")))
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
