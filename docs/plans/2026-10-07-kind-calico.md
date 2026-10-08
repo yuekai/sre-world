@@ -33,6 +33,10 @@ kindnetd has no flag to disable its policy engine.
 - [x] Oracle run of task 007 on the new environment: reward 1.0, all ten
   required evidence packs pass (job `oracle-007-calico`, 2026-10-07)
 
+- [x] Regression gate: `./validate.sh kind` (`tools/kind_netpol_smoke.py`), run in
+  CI by `.github/workflows/kind-netpol.yaml`; it fails the two reply checks on
+  kindnet and passes on Calico
+
 ## Decisions
 
 - Fetch the manifest at cluster-up and verify its sha256 instead of vendoring

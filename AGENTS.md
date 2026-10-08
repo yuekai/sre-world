@@ -32,6 +32,7 @@ uv run python -m tools.task_dev <substrate>/<id>      # regenerate one task + sc
 uv run python -m tools.generate_tasks --all [--check] # regenerate / verify all committed tasks
 ./validate.sh smoke                                   # cluster-free structural gates (~1 min)
 ./validate.sh arena                                   # parity with Incident Arena (fetches the pinned checkout)
+./validate.sh kind                                    # Kind cluster enforces NetworkPolicy as charts assume (Docker, ~1 min)
 uv run pytest -q                                      # unit tests
 git config core.hooksPath .githooks                   # once per clone: pre-commit gates
 ```

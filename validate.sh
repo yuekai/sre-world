@@ -22,11 +22,14 @@
 #   arena      regenerated tasks equal the Incident Arena reference (tools/arena_parity;
 #              fetches the pinned checkout into .cache/ unless ARENA_DIR is set)
 #
-# Full e2e gate (needs harbor CLI + Docker + kind):
+# Cluster gates (need Docker + kind):
+#   kind       the trusted Kind cluster (Calico) enforces the chart's NetworkPolicies
+#              the way bring-ups need: probes, DNS and reply traffic pass, ingress
+#              is restricted (tools/kind_netpol_smoke, ~1 min)
 #   harbor     rebuild each substrate's images, then oracle -> PASS / nop -> FAIL
 #              on its harbor_gate_scenario through `harbor run -e helm`
 #
-#   smoke = lint+contracts+generate+consistency+render+identity+provenance+probe+arena   all = smoke + harbor
+#   smoke = lint+contracts+generate+consistency+render+identity+provenance+probe+arena   all = smoke + kind + harbor
 #
 # Usage:  ./validate.sh [gate] [substrate]   (default gate: smoke; the
 # optional substrate scopes the local developer convenience path)
@@ -209,6 +212,15 @@ target_arena() {
     bad "arena parity FAILED — rerun with: uv run python -m tools.arena_parity --arena $dir --diff; fix the source, or justify the difference in ALLOWED_DIFFERENCES (tools/arena_parity.py)"
   fi
 }
+target_kind() {
+  hr "kind: the trusted Kind cluster enforces NetworkPolicy as the chart assumes"
+  docker info >/dev/null 2>&1 || { bad "Docker is not running"; return; }
+  if uv run python -m tools.kind_netpol_smoke; then
+    ok "Kind cluster passes the NetworkPolicy smoke"
+  else
+    bad "Kind NetworkPolicy smoke FAILED — rerun with: uv run python -m tools.kind_netpol_smoke --keep; see docs/plans/2026-10-07-kind-calico.md"
+  fi
+}
 target_harbor() {
   hr "harbor: rebuild images, then oracle → PASS / nop → FAIL via harbor run -e helm"
   # local_run invokes `harbor` from inside `uv run`, which resolves the project
@@ -245,10 +257,11 @@ case "${1:-smoke}" in
   probe)     target_probe ;;
   harbor)    target_harbor ;;
   arena)     target_arena ;;
+  kind)      target_kind ;;
   consistency) target_consistency ;;
   smoke)     target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe; target_arena ;;
-  all)       target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe; target_arena; target_harbor ;;
-  *) echo "usage: $0 [lint|contracts|generate|consistency|render|identity|provenance|probe|arena|harbor|smoke|all] [substrate]"; exit 2 ;;
+  all)       target_lint; target_contracts; target_generate; target_consistency; target_render; target_identity; target_provenance; target_probe; target_arena; target_kind; target_harbor ;;
+  *) echo "usage: $0 [lint|contracts|generate|consistency|render|identity|provenance|probe|arena|kind|harbor|smoke|all] [substrate]"; exit 2 ;;
 esac
 
 hr "RESULT"

@@ -546,6 +546,19 @@ def _validate_observed_kind_service_ip(raw_ip: str) -> None:
         )
 
 
+def fetch_calico_manifest() -> bytes:
+    """The pinned Calico manifest, refused if its content moved."""
+    with urllib.request.urlopen(_CALICO_MANIFEST_URL, timeout=60) as response:
+        body = response.read()
+    digest = hashlib.sha256(body).hexdigest()
+    if digest != _CALICO_MANIFEST_SHA256:
+        raise RuntimeError(
+            f"Calico manifest digest mismatch: url={_CALICO_MANIFEST_URL}, "
+            f"expected={_CALICO_MANIFEST_SHA256}, observed={digest}"
+        )
+    return body
+
+
 class SlackSpineKindLauncher(KindLauncher):
     """Harbor Kind launcher pinned to the hosted-k3s Service CIDR."""
 
@@ -594,14 +607,7 @@ class SlackSpineKindHelmEnvironment(HelmEnvironment):
         """Install the pinned Calico manifest and wait for a Ready node."""
         with tempfile.TemporaryDirectory() as tmp:
             manifest = Path(tmp) / "calico.yaml"
-            with urllib.request.urlopen(_CALICO_MANIFEST_URL, timeout=60) as response:
-                manifest.write_bytes(response.read())
-            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
-            if digest != _CALICO_MANIFEST_SHA256:
-                raise RuntimeError(
-                    f"Calico manifest digest mismatch: url={_CALICO_MANIFEST_URL}, "
-                    f"expected={_CALICO_MANIFEST_SHA256}, observed={digest}"
-                )
+            manifest.write_bytes(fetch_calico_manifest())
             host_manifest = f"/tmp/hb-calico-{uuid.uuid4().hex}.yaml"
             await self._stage_file_to_host(manifest, host_manifest)
         try:

@@ -314,6 +314,9 @@ PYTHONPATH="$PWD" uv run harbor run -p tasks/slack-spine/06-F3-split-sequencer \
   and Saleor are not yet.
 - Cluster bring-up downloads the Calico manifest and its images, so the host
   needs internet access.
+- If a bring-up times out with pods unable to resolve DNS, run
+  `./validate.sh kind`: it builds the same cluster and checks NetworkPolicy
+  enforcement in about a minute.
 
 ## 8. Troubleshooting
 
