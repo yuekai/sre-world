@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# declare_repair_complete — end the episode. THE only command that does.
+#
+#       POST http://loadgen:9100/declare_repair_complete
+#
+# Run this when you believe the incident is fixed and you are done touching the
+# system. It takes no arguments and carries no payload: it is a statement about
+# the system, not about your findings.
+#
+# WHAT HAPPENS NEXT, immediately and irreversibly:
+#   1. Your shell and every process you own are terminated.
+#   2. A protected soak runs against the system in the state you left it.
+#   3. That soak, plus the state itself, is what gets graded.
+#
+# So do not run this while a fix is half-applied or a migration is mid-flight.
+# There is no second declaration and no way to take one back.
+#
+# You do NOT have to run it. If you never do, the episode ends at its deadline
+# and is graded from its final state exactly the same way — declaring early just
+# stops the clock sooner. Nothing about your score depends on whether you
+# declared, and nothing about it depends on `submit_incident_report`, which is
+# advisory and never ends an episode.
+#
+# FAIL LOUDLY: a connection failure, a second declaration, or an episode that has
+# already ended all exit nonzero with the server's reason on stderr.
+set -euo pipefail
+
+PROG="declare_repair_complete"
+DECLARE_URL="${DECLARE_URL:-http://loadgen:9100/declare_repair_complete}"
+OUT=/tmp/declare_repair_complete.out
+
+die() { echo "[$PROG] FATAL: $*" >&2; exit 1; }
+
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        -h|--help)
+            sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *)
+            die "takes no arguments (got: $*). Findings belong in submit_incident_report." ;;
+    esac
+fi
+
+echo "[$PROG] POST ${DECLARE_URL}" >&2
+
+# 503 means the episode's loadgen has not published itself yet, which is a
+# provisioning race and not a refusal. Anything else is answered as-is.
+attempt=0
+while :; do
+    code="$(curl -sS -o "$OUT" -w '%{http_code}' \
+        -X POST "${DECLARE_URL}" -H 'Content-Length: 0')" \
+        || die "POST ${DECLARE_URL} failed (connection error — is the loadgen pod reachable?)"
+    if [ "$code" = 503 ]; then
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt 120 ] || \
+            die "loadgen episode did not become ready: $(cat "$OUT")"
+        sleep 1
+        continue
+    fi
+    break
+done
+
+case "$code" in
+    2*) echo "[$PROG] repair declared complete (HTTP ${code}): $(cat "$OUT")" >&2
+        echo "[$PROG] the graded soak is starting; exit now." >&2
+        echo "OK" ;;
+    409) die "the episode is already over: $(cat "$OUT")" ;;
+    *)   die "POST ${DECLARE_URL} returned HTTP ${code}: $(cat "$OUT")" ;;
+esac

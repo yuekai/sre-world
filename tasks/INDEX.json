@@ -12,10 +12,10 @@
       "hosted_launcher": "k3s",
       "images": {
         "custom": {
-          "frappeAdmin": "ghcr.io/abundant-ai/sre-world/frappe-admin-sidecar@sha256:9975944f1d375dea6afb9c35159f978c4d82691f232e4818ff7faff66121cd2d",
-          "loadgen": "ghcr.io/abundant-ai/sre-world/frappe-loadgen@sha256:0372494536eb9a0b40745cdc92a1915ec5b144a67f8bc509845eba5e411b310c",
-          "main": "ghcr.io/abundant-ai/sre-world/frappe-main@sha256:d40b49eb1c050f14d4fa91ad5bb894ee1db61724466caea903ee0a952574210e",
-          "obsMcp": "ghcr.io/abundant-ai/sre-world/frappe-obs-mcp@sha256:1646a2a67d5d0e484dc1b760c2900cb756c7986e9a86cead61175b2737883808"
+          "frappeAdmin": "ghcr.io/yuekai/sre-world/frappe-admin-sidecar@sha256:9975944f1d375dea6afb9c35159f978c4d82691f232e4818ff7faff66121cd2d",
+          "loadgen": "ghcr.io/yuekai/sre-world/frappe-loadgen@sha256:0372494536eb9a0b40745cdc92a1915ec5b144a67f8bc509845eba5e411b310c",
+          "main": "ghcr.io/yuekai/sre-world/frappe-main@sha256:d40b49eb1c050f14d4fa91ad5bb894ee1db61724466caea903ee0a952574210e",
+          "obsMcp": "ghcr.io/yuekai/sre-world/frappe-obs-mcp@sha256:1646a2a67d5d0e484dc1b760c2900cb756c7986e9a86cead61175b2737883808"
         },
         "local_load": [
           "frappe-main:dev",
@@ -55,10 +55,10 @@
       "hosted_launcher": "k3s",
       "images": {
         "custom": {
-          "loadgen": "ghcr.io/abundant-ai/sre-world/saleor-loadgen@sha256:cdee1728463bbaa0c2665a809bb39b5c7919a48a4575fd629b3c4f6a857f812e",
-          "main": "ghcr.io/abundant-ai/sre-world/saleor-main@sha256:ece6147d06e9f60750b33827302a063cebfa4112e1a37f002dd778b441c09ba5",
-          "obsMcp": "ghcr.io/abundant-ai/sre-world/saleor-obs-mcp@sha256:5772f8a4e64b6030ff214837cf9376fbfe67e6659fbca6d595da6c2af855f309",
-          "saleorApp": "ghcr.io/abundant-ai/sre-world/saleor-app@sha256:d4d0581c2c2082a0a0f11e58dcf67f739cd8e20e83d953ff24d74e0791fc9f40"
+          "loadgen": "ghcr.io/yuekai/sre-world/saleor-loadgen@sha256:cdee1728463bbaa0c2665a809bb39b5c7919a48a4575fd629b3c4f6a857f812e",
+          "main": "ghcr.io/yuekai/sre-world/saleor-main@sha256:ece6147d06e9f60750b33827302a063cebfa4112e1a37f002dd778b441c09ba5",
+          "obsMcp": "ghcr.io/yuekai/sre-world/saleor-obs-mcp@sha256:5772f8a4e64b6030ff214837cf9376fbfe67e6659fbca6d595da6c2af855f309",
+          "saleorApp": "ghcr.io/yuekai/sre-world/saleor-app@sha256:d4d0581c2c2082a0a0f11e58dcf67f739cd8e20e83d953ff24d74e0791fc9f40"
         },
         "local_load": [
           "saleor-main:dev",
@@ -100,14 +100,14 @@
       "hosted_launcher": "k3s",
       "images": {
         "custom": {
-          "app": "ghcr.io/abundant-ai/sre-world/slack-app@sha256:e050b1d953721145ee580e1baf1e424c55aa31c37a15c909e296c9607c8f7f4a",
-          "appBuilder": "ghcr.io/abundant-ai/sre-world/slack-app-builder@sha256:5201d7a4c6e4313c2b9d01209ff6aed413af6f4cc2e11d667631f0ce4920fa07",
-          "go": "ghcr.io/abundant-ai/sre-world/slack-go@sha256:a9c60cefb4326ff918867ab522e05a9570b5b50fccc6208372228ed341d123dd",
-          "loadgen": "ghcr.io/abundant-ai/sre-world/slack-loadgen@sha256:5a8bfa7e291a3e9ddc32eca99d291531964f08e3b1e269bd59fc9236a1eebbd2",
-          "main": "ghcr.io/abundant-ai/sre-world/slack-main@sha256:e3dec9737ddfb496b7c380ff529248bf4216514f0d0127f91e41973c05d940f9",
-          "obsMcp": "ghcr.io/abundant-ai/sre-world/slack-obs-mcp@sha256:891670f269e57db65d9a2a896472d91a876efb9896f139efd5e503a3b9818ae9",
-          "pgbouncer": "ghcr.io/abundant-ai/sre-world/slack-pgbouncer@sha256:70dc0e4aefb23ba0646a3410358732ba8358f3b8aa95b8595f2decbba56ceff0",
-          "py": "ghcr.io/abundant-ai/sre-world/slack-py@sha256:c3a51b1ab5082f337ae5e8c1f2d60467273b1e73440580fc7e1132564b943c12"
+          "app": "ghcr.io/yuekai/sre-world/slack-app@sha256:e050b1d953721145ee580e1baf1e424c55aa31c37a15c909e296c9607c8f7f4a",
+          "appBuilder": "ghcr.io/yuekai/sre-world/slack-app-builder@sha256:5201d7a4c6e4313c2b9d01209ff6aed413af6f4cc2e11d667631f0ce4920fa07",
+          "go": "ghcr.io/yuekai/sre-world/slack-go@sha256:a9c60cefb4326ff918867ab522e05a9570b5b50fccc6208372228ed341d123dd",
+          "loadgen": "ghcr.io/yuekai/sre-world/slack-loadgen@sha256:5a8bfa7e291a3e9ddc32eca99d291531964f08e3b1e269bd59fc9236a1eebbd2",
+          "main": "ghcr.io/yuekai/sre-world/slack-main@sha256:e3dec9737ddfb496b7c380ff529248bf4216514f0d0127f91e41973c05d940f9",
+          "obsMcp": "ghcr.io/yuekai/sre-world/slack-obs-mcp@sha256:891670f269e57db65d9a2a896472d91a876efb9896f139efd5e503a3b9818ae9",
+          "pgbouncer": "ghcr.io/yuekai/sre-world/slack-pgbouncer@sha256:70dc0e4aefb23ba0646a3410358732ba8358f3b8aa95b8595f2decbba56ceff0",
+          "py": "ghcr.io/yuekai/sre-world/slack-py@sha256:c3a51b1ab5082f337ae5e8c1f2d60467273b1e73440580fc7e1132564b943c12"
         },
         "local_load": [
           "slack-app:dev",
@@ -258,7 +258,7 @@
         "qualified_source_sha": null,
         "workflow_run_id": null
       },
-      "scenario": "frappe/07-writes-and-queue-oom",
+      "scenario": "frappe/07-deletes-and-jobs-fail",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -506,7 +506,7 @@
         "qualified_source_sha": null,
         "workflow_run_id": null
       },
-      "scenario": "frappe/07-writes-and-queue-oom",
+      "scenario": "frappe/07-new-records-and-queue-oom",
       "sizing": {
         "cpus": 8,
         "memory_mb": 16384,
@@ -582,6 +582,68 @@
       "timeouts": {
         "agent_sec": 3930.0,
         "verifier_sec": 4770.0
+      }
+    },
+    {
+      "agent_surface": "confined",
+      "calibration": {
+        "base_current": false,
+        "base_fingerprint": null,
+        "calibrated_at": null,
+        "calibration_surface_fingerprint": null,
+        "current": false,
+        "grader_fingerprint": null,
+        "health_current": true,
+        "health_version": null,
+        "layer_current": false,
+        "layer_fingerprint": null,
+        "policy_current": true,
+        "policy_version": 1,
+        "profile_fingerprint": null,
+        "qualification_surface_fingerprint": null,
+        "source_sha": null,
+        "workflow_run_id": null
+      },
+      "causal_distance": 3,
+      "eval_ready": true,
+      "fault_presentation": "committed",
+      "hosted_ready": false,
+      "id": "10-T1-statement-timeout-canary",
+      "images": {
+        "local_load_additions": [],
+        "overrides": {}
+      },
+      "launcher": "k3s",
+      "layer_fingerprint": "sha256:a050cdd1c0d4ca0529e678a94622c879c3ff584305eb88ab0ee8cb4e2eecd1ae",
+      "name": "sre-world/saleor-spine-10t1-statement-timeout-canary",
+      "profile": "saleor_timeout_eval",
+      "provisional": true,
+      "qualification": {
+        "current": false,
+        "fingerprints": {
+          "capture": null,
+          "evaluator": null,
+          "package": null
+        },
+        "health_version": null,
+        "path": "qualification/locks/saleor-spine/10-T1-statement-timeout-canary.json",
+        "qualified_source_sha": null,
+        "workflow_run_id": null
+      },
+      "scenario": "saleor-spine/10-T1-statement-timeout-canary",
+      "sizing": {
+        "cpus": 8,
+        "memory_mb": 16384,
+        "storage_mb": 40960
+      },
+      "slug": "statement-timeout-canary",
+      "state_note": null,
+      "substrate": "saleor-spine",
+      "temporal_emergence": true,
+      "tier": "runtime",
+      "timeouts": {
+        "agent_sec": 3903.0,
+        "verifier_sec": 4743.0
       }
     },
     {
@@ -1356,7 +1418,7 @@
       "images": {
         "local_load_additions": [],
         "overrides": {
-          "app": "ghcr.io/abundant-ai/sre-world/slack-app@sha256:4a0a6587c7023bbe553a2f3b08db7c2597190313cd5674909d65185793133d93"
+          "app": "ghcr.io/yuekai/sre-world/slack-app@sha256:4a0a6587c7023bbe553a2f3b08db7c2597190313cd5674909d65185793133d93"
         }
       },
       "launcher": "k3s",
@@ -1420,7 +1482,7 @@
       "images": {
         "local_load_additions": [],
         "overrides": {
-          "app": "ghcr.io/abundant-ai/sre-world/slack-app@sha256:b73d144c2d817481956653e34095f38cfdc70e554d78f3521e72d0d1d6cd15fd"
+          "app": "ghcr.io/yuekai/sre-world/slack-app@sha256:b73d144c2d817481956653e34095f38cfdc70e554d78f3521e72d0d1d6cd15fd"
         }
       },
       "launcher": "k3s",

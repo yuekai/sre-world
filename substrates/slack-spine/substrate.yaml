@@ -96,7 +96,7 @@ chart:
 images:
   # Hosted registry the custom images are published to (PR: hosted-canonical tasks
   # pull <registry>/<basename>:<release>; local dev side-loads <basename>:dev).
-  registry: ghcr.io/abundant-ai/sre-world
+  registry: ghcr.io/yuekai/sre-world
   # Immutable release tag; bumped by hand, published by tools/push_images.py, and
   # pinned by digest in images.lock.json. Never re-push a release with different bytes.
   # v3: last release whose base still carries the (now-retired, inert) dormant

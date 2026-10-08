@@ -126,9 +126,8 @@ soak_cycles: 2
 verification:
   version: 2
   materializers:
-  - incident_report
   - repair_scope
-  - legacy_outcome
+  - outcome
   - traffic_reconciliation
   public_requirements:
   - id: F4-OUT-1
@@ -144,50 +143,39 @@ verification:
   - id: F4-MAINT-5
     text: The protected later boundary completes without a failed or active run.
   - id: F4-SCOPE-1
-    text: Message-path capacity and delay remain inside the existing safe envelope, and protected PostgreSQL resource, timeout, durability, and maintenance guardrails remain intact.
+    text: Neither repair rewrites protected application configuration, and none of it drifts after completion; message-path capacity and delay remain inside the existing safe envelope, and protected PostgreSQL resource, timeout, durability, and maintenance guardrails remain intact.
   - id: F4-DATA-1
     text: Pre-agent records and successfully offered writes survive unchanged.
   - id: F4-DUR-1
     text: The repaired durable schedule remains unchanged through active verification.
   - id: F4-COMPLETE-1
-    text: One non-null report freezes the agent and starts final verification.
-  - id: C-D-1
-    text: Submit exactly one non-null incident report containing exactly 2 findings to finish and freeze the run; `submit_incident_report` is the supported interface, and the findings must name service channel and component channel.membership-acl; service db and component db.maintenance-controller using the published vocabulary, with no extra and no missing finding. Mechanism prose is advisory.
-  completion:
-    required: true
-    requirement_ids: [F4-COMPLETE-1, C-D-1]
-    summary: A non-null report with the required canonical two-pair attribution completed and froze the run.
+    text: The agent is frozen at the end of its window and final verification runs behind that boundary.
   outcome:
     checks:
-    - id: canonical_report_shape
-      requirement_ids: [C-D-1]
-      summary: The incident report uses the canonical findings envelope with exactly 2 complete findings.
-      observe: {artifact: derived/incident-report.json, pointer: /pass}
-      assert: {op: equals, value: true}
-    - id: canonical_report_set
-      requirement_ids: [C-D-1]
-      summary: The incident report names exactly the answer-key set of (service, component) pairs — a missing pair and an extra pair both fail.
-      observe: {artifact: derived/incident-report.json, pointer: /pairs}
-      assert: {op: set_equals, value: ["channel/channel.membership-acl", "db/db.maintenance-controller"]}
     - id: sustained_latency
       requirement_ids: [F4-OUT-1]
       summary: Peak and trough p90 message-write latency satisfy the disclosed two-cycle limits.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/latency/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/latency/pass}
       assert: {op: equals, value: true}
     - id: sustained_error_rate
       requirement_ids: [F4-OUT-1]
       summary: Message-write error rate satisfies the disclosed limit.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/error_rate/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/error_rate/pass}
       assert: {op: equals, value: true}
     - id: sustained_correct_goodput
       requirement_ids: [F4-OUT-1]
       summary: Correct message-write goodput satisfies the disclosed floor.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
+      observe: {artifact: derived/outcome.json, pointer: /checks/goodput/pass}
+      assert: {op: equals, value: true}
+    - id: per_driver_goodput_and_errors
+      requirement_ids: [F4-OUT-1]
+      summary: Every measured traffic driver satisfies its own error-rate ceiling and goodput floor.
+      observe: {artifact: derived/outcome.json, pointer: /checks/by_driver/pass}
       assert: {op: equals, value: true}
     - id: required_services_running
       requirement_ids: [F4-OUT-1]
       summary: Every required service is running at final collection.
-      observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
+      observe: {artifact: derived/outcome.json, pointer: /checks/services_up/value/all_running}
       assert: {op: equals, value: true}
     - id: offered_work_reconciled
       requirement_ids: [F4-OUT-1]
@@ -196,13 +184,6 @@ verification:
       assert: {op: equals, value: true}
   safe_repair:
     packs:
-    - name: correct_goodput
-      checks:
-      - id: correct_writes
-        requirement_ids: [F4-OUT-1]
-        summary: Offered writes complete with the published correct-goodput ratio.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/goodput/pass}
-        assert: {op: equals, value: true}
     - name: traffic_reconciliation
       checks:
       - id: no_suppression
@@ -214,13 +195,6 @@ verification:
         requirement_ids: [F4-OUT-1]
         summary: Every arrival across the complete immutable traffic ledger is represented by the recorded accounting totals.
         observe: {artifact: derived/traffic-reconciliation.json, pointer: /complete_accounting}
-        assert: {op: equals, value: true}
-    - name: service_health
-      checks:
-      - id: required_services_up
-        requirement_ids: [F4-OUT-1]
-        summary: Every required service remains healthy through the soak.
-        observe: {artifact: derived/legacy-outcome.json, pointer: /checks/services_up/value/all_running}
         assert: {op: equals, value: true}
     - name: maintenance_functional
       checks:
@@ -269,6 +243,16 @@ verification:
       # trajectory and bind only an agent that inflates the pool it was not asked
       # to change.
       checks:
+      - id: no_unrelated_config_mutation
+        requirement_ids: [F4-SCOPE-1]
+        summary: The repair rewrites no protected application-configuration key.
+        observe: {artifact: derived/repair-scope.json, pointer: /changed_keys}
+        assert: {op: subset_of, value: []}
+      - id: no_post_declaration_config_drift
+        requirement_ids: [F4-SCOPE-1]
+        summary: Protected application configuration does not drift between completion and soak end.
+        observe: {artifact: derived/repair-scope.json, pointer: /post_declaration_drift}
+        assert: {op: empty}
       - id: message_pool_size_ceiling_at_declaration
         requirement_ids: [F4-SCOPE-1]
         summary: Message pool capacity remains within the existing budget at declaration.
@@ -316,19 +300,9 @@ verification:
         assert: {op: equals, value: true}
     - name: data_survival
       checks:
-      # ONE check here, observing /data/pass and carrying the /data/* evidence —
-      # 06-F4's shape, kept deliberately. The evidence-pointer rule is: never cite
-      # same-artifact evidence from a check whose OBSERVE pointer still resolves on
-      # a non-applicable receipt. On the no-declaration path the challenge is not
-      # run and the receipt is the `applicable: false` shape, which has /pass but
-      # NO /data at all, so /data/pass is exactly the pointer that fails to
-      # resolve — checks.py:255-311 then takes the graceful non-applicable branch,
-      # the one branch that skips same-artifact evidence, and the nop FAILS instead
-      # of erroring. The /pass consumer the contract layer requires is supplied by
-      # maintenance_functional.protected_checkpoint above, which carries no
-      # evidence list; the two-check split the pool+authz compound needed exists
-      # only because that task dropped maintenance_functional and had no other
-      # /pass consumer.
+      # Every completed episode runs the challenge. A valid verifier-owned
+      # failure receipt grades a missing success-only pointer as FAIL; malformed
+      # receipts and incomplete successful receipts remain loud evidence errors.
       - id: protected_state_survived
         requirement_ids: [F4-DATA-1]
         summary: Every protected pre-agent message and channel-sequence row plus every successful offered write survives unchanged.
@@ -399,9 +373,7 @@ verification:
         observe: {artifact: challenge/maintenance-functional.json, pointer: /controller/schedule_unchanged}
         assert: {op: equals, value: true}
     require:
-    - correct_goodput
     - traffic_reconciliation
-    - service_health
     - maintenance_functional
     - repair_scope
     - data_survival
@@ -423,7 +395,7 @@ verification:
   # which matters doubly here: a pod replacement would both void the durable
   # schedule evidence and re-read ACTIVE_EVENTS, silently clearing leg B.
   # timeout_s MUST equal the profile's fixed 120 s (contract.py:424-431,
-  # tools/verifier_v2/profiles/slack_checkpoint_v1.py).
+  # verifier/profiles/slack_checkpoint_v1.py).
   challenge:
     type: database_checkpoint
     profile_id: slack_checkpoint_v1

@@ -9,7 +9,7 @@ Three consumers use this source and MUST stay evidence-identical:
     (``substrate/loadgen_sidecar.py``), which assembles the same rundir from
     the files it already owns under ``/grader`` plus in-cluster HTTP probes,
     then serves the finalized evidence bundle, and
-  * each committed task's ``tests/oracle/assemble.py`` copy, used only after
+  * each committed task's vendored ``tests/verifier/`` copy, used only after
     the bundle has reached Harbor's root verifier.
 
 Everything in this module is a pure function of its inputs (no kubectl, no
@@ -44,9 +44,9 @@ DEFAULT_DOCKER_SERVICES = (SVC_MESSAGE, SVC_AUTH, SVC_CHANNEL)
 # app-service list above (the db is probed unconditionally).
 DB_STATE_KEY = "db"
 
-# Relative path (under config_before/ and config_after/) at which the oracle's
-# minimality differ compares the app config. Must be IDENTICAL in both trees so
-# diff_keys() pairs them up.
+# Relative path (under config_before/ and config_after/) at which the
+# repair_scope differ compares the app config. Must be IDENTICAL in both trees
+# so the differ pairs them up.
 CONFIG_RELPATH = Path("sut") / "config" / "app.yaml"
 
 # The rendered ConfigMap whose `app.yaml` key carries the SUT config (chart's
@@ -230,29 +230,24 @@ def seq_integrity_channels(manifest: dict[str, Any]) -> list[str]:
 def validate_episode_done(payload: Any) -> dict[str, Any]:
     """Validate a parsed episode_done.json payload; return it.
 
-    FAIL LOUDLY on a non-object payload or one carrying an ``error`` field (the
-    sidecar crashed) — grading must not proceed on a partial episode.
+    The import is intentionally lazy: this module is also loaded in the
+    sidecar image, while completed-episode validation is host/verifier-owned.
+    Both the host adapter and every generated verifier closure therefore use
+    the exact same truth-table implementation.
     """
-    if not isinstance(payload, dict):
-        raise RuntimeError(
-            "slack-spine verifier: episode_done.json is not a JSON "
-            f"object: {payload!r}"
-        )
-    if payload.get("error"):
-        raise RuntimeError(
-            "slack-spine verifier: loadgen sidecar reported an error: "
-            f"{payload['error']!r} (full payload: {payload!r})"
-        )
-    return payload
+    from verifier.episode import validate_episode_done as validate
+
+    return validate(payload)
 
 
 def require_declare_snapshot(declared: bool, snapshot: dict[str, Any] | None) -> None:
     """FAIL CLOSED if a declaration was filed but the declare snapshot is absent."""
     if declared and snapshot is None:
         raise RuntimeError(
-            "slack-spine verifier: a declaration was filed (report.json non-null) but "
-            "config_at_declare.json is absent — the loadgen did not snapshot the "
-            "declare-time config, so minimality cannot be judged. Failing closed."
+            "slack-spine verifier: the episode was declared complete "
+            "(meta.declare_ts_s is set) but config_at_declare.json is absent — the "
+            "loadgen did not snapshot the declare-time config, so minimality cannot "
+            "be judged. Failing closed."
         )
 
 
@@ -273,9 +268,9 @@ def build_config_after(
 
     No snapshot (the null path) -> config_after == config_before.
 
-    FAIL CLOSED: if the snapshot is present but a role that exists in
-    config_before is missing or was unreachable (e.g. an agent that DoS'd a
-    sibling to keep its mutation out of the diff), raise rather than skipping.
+    FAIL CLOSED: new snapshots carry the protected ``snapshot_services`` list.
+    Every listed (enabled) role must be present and reachable. Legacy snapshots
+    without that field retain the older all-rendered-roles behavior.
     """
     doc = yaml.safe_load(rendered_before)
     if not isinstance(doc, dict):
@@ -300,7 +295,41 @@ def build_config_after(
             f"{declare_snapshot!r}"
         )
 
-    for role, role_cfg in roles.items():
+    snapshot_services = declare_snapshot.get("snapshot_services")
+    if snapshot_services is None:
+        # Backwards compatibility for already-captured evidence. Before the
+        # enabled-runtime contract, every rendered role was required.
+        expected_roles = [
+            role
+            for role, role_cfg in roles.items()
+            if isinstance(role_cfg, dict) and isinstance(role_cfg.get("db"), dict)
+        ]
+    else:
+        if (
+            not isinstance(snapshot_services, list)
+            or not snapshot_services
+            or any(not isinstance(role, str) or not role for role in snapshot_services)
+            or len(set(snapshot_services)) != len(snapshot_services)
+        ):
+            raise RuntimeError(
+                "slack-spine verifier: declare snapshot has an invalid "
+                f"`snapshot_services` list: {snapshot_services!r}"
+            )
+        expected_roles = snapshot_services
+        if set(expected_roles) != set(services):
+            raise RuntimeError(
+                "slack-spine verifier: declare snapshot service keys do not match "
+                "the protected enabled-role list; failing closed "
+                f"(expected {sorted(expected_roles)!r}, got {sorted(services)!r})"
+            )
+
+    for role in expected_roles:
+        role_cfg = roles.get(role)
+        if not isinstance(role_cfg, dict):
+            raise RuntimeError(
+                f"slack-spine verifier: enabled snapshot service {role!r} is absent "
+                "from config_before; failing closed"
+            )
         if not isinstance(role_cfg, dict) or not isinstance(role_cfg.get("db"), dict):
             continue  # roles without a db block are outside the pool-fault surface
         entry = services.get(role)
@@ -603,8 +632,8 @@ def build_db_state(
 ) -> dict[str, Any]:
     """Assemble the BUILD CONTRACT §4.2 db_state.json shape.
 
-    ``holdback_sessions`` stays in the shape (always ``[]`` here) so the oracle's
-    no_holdback check keeps its legacy field; the live no-holdback signal is
+    ``holdback_sessions`` stays in the shape (always ``[]`` here) so a consumer
+    reading the historical field still parses; the live no-holdback signal is
     ``prepared_xacts_count``.
     """
     return {
@@ -618,37 +647,12 @@ def build_db_state(
 
 
 def build_lock_state(*, idle_in_txn_holders: list[dict[str, Any]]) -> dict[str, Any]:
-    """Assemble the oracle.lock_state probe shape: {"idle_in_txn_holders":[...]}."""
+    """Assemble the lock_state probe shape: {"idle_in_txn_holders":[...]}."""
     return {
         "idle_in_txn_holders": [
             {"pid": int(h["pid"]), "age_s": float(h["age_s"])}
             for h in idle_in_txn_holders
         ]
-    }
-
-
-# --- verdict -> harbor reward mapping --------------------------------------------
-
-
-def verdict_to_rewards(verdict: dict[str, Any]) -> dict[str, float]:
-    """Map the oracle verdict dict to the reward dict per the contract."""
-    try:
-        overall = verdict["overall"]
-        gate1_pass = verdict["gate1"]["pass"]
-        gate2_pass = verdict["gate2"]["pass"]
-        minimality_pass = verdict["minimality"]["pass"]
-        db_state_pass = verdict["db_state"]["pass"]
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError(
-            "slack-spine verifier: oracle verdict is missing expected keys: "
-            f"{exc}; verdict={verdict!r}"
-        ) from exc
-    return {
-        "reward": 1.0 if overall == "PASS" else 0.0,
-        "gate1": 1.0 if gate1_pass else 0.0,
-        "gate2": 1.0 if gate2_pass else 0.0,
-        "minimality": 1.0 if minimality_pass else 0.0,
-        "db_state": 1.0 if db_state_pass else 0.0,
     }
 
 

@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import copy
 import filecmp
+import hashlib
 import json
 import tomllib
 import re
@@ -987,7 +988,10 @@ def _grader_settings_and_baseline(
             "podState": {"enabled": True},
             "answerKey": {"enabled": True},
             "dbState": {
-                "enabled": "db_state" in manifest or "mariadb_state" in manifest
+                "enabled": any(
+                    key in manifest
+                    for key in ("db_state", "mariadb_state", "postgres_invariants")
+                )
             },
             "lockState": {
                 "enabled": (
@@ -1049,6 +1053,7 @@ def _validate_required_capabilities(manifest: dict[str, Any], sub: Substrate) ->
         "grant_fingerprint": "mariadb.grants",
         "schema_fingerprint": "mariadb.integrity",
         "schema_privilege": "mariadb.grants",
+        "site_account_grants": "mariadb.grants",
         "table_count": "mariadb.integrity",
         "table_checksum": "mariadb.integrity",
     }
@@ -2047,6 +2052,19 @@ def _generate(
                 REPO_ROOT / source,
                 target,
             )
+        if v2_contract.task_verifier is not None:
+            # A task-specific grader authored beside the scenario; the answer key
+            # pins every file by sha256, so a drifted source fails here, loudly.
+            for name, digest in v2_contract.task_verifier["files"].items():
+                source = spec_dir / "task_verifier" / name
+                if not source.is_file():
+                    _die(f"task_verifier file missing: {source}")
+                actual = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+                if actual != digest:
+                    _die(f"task_verifier {source}: {actual} != declared {digest}")
+                target = v2_dest / "task_verifier" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
     if not uses_v2_oracle and uses_p1_oracle:
         shutil.copytree(
             REPO_ROOT / "verifier" / "oracle_p1",

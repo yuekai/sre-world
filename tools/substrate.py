@@ -1170,21 +1170,32 @@ def normalize_window_profiles(
     if base is None:
         _die(f"{sub.name}: profile {profile_name!r} has unknown base {entry.get('base')!r}")
     loop = bool(entry.get("loop", getattr(base, "loop", False)))
-    authored_cycles = entry.get("cycles")
-    cycles = [list(c) for c in (authored_cycles or base.cycles)]
+    cycles = [list(c) for c in (entry.get("cycles") or base.cycles)]
     if not cycles:
         _die(f"{sub.name}: profile {profile_name!r} resolves to no load cycles")
-    if any(c != cycles[0] for c in cycles):
-        _die(f"{sub.name}: profile {profile_name!r} mixes cycle shapes; cannot fit a window")
-    period = float(cycles[0][0]) + float(cycles[0][2])
+
+    def duration(i: int) -> float:  # peak_s + trough_s of the i-th cycle in rotation
+        c = cycles[i % len(cycles)]
+        return float(c[0]) + float(c[2])
+
     warmup = float(entry.get("warmup_s", base.warmup_s))
     declare = window_declare_deadline_s(sub, agent_window_s)
+    # Cycles that fit before the deadline, walking the schedule in rotation.
+    n, elapsed = 0, warmup
+    while elapsed + duration(n) <= declare + 1e-9:
+        elapsed += duration(n)
+        n += 1
+    # Soak: the fewest following cycles that cover the soak window.
+    soak_cycles, covered = 0, 0.0
+    while covered < float(soak_s) - 1e-9:
+        covered += duration(n + soak_cycles)
+        soak_cycles += 1
     if not loop:
         entry.pop("cycles", None)  # re-emitted below, expanded to the window
     entry["declare_deadline_s"] = declare
-    entry["soak_cycles"] = int(round(float(soak_s) / period))
+    entry["soak_cycles"] = soak_cycles
     if not loop:
-        entry["cycles"] = [list(cycles[0]) for _ in range(int((declare - warmup) // period))]
+        entry["cycles"] = [list(cycles[i % len(cycles)]) for i in range(n)]
     profiles[profile_name] = entry
     return yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
 

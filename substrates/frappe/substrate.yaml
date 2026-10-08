@@ -68,6 +68,12 @@ capabilities:
   - mariadb.grants
   - mariadb.integrity
   - redis.configuration
+  - redis.acl_evidence
+  - redis.pre_soak_backlog_recovery
+  - redis.stranded_report_recovery
+  - redis.accepted_email_delivery
+  - redis.cache_flush_guard
+  - kubernetes.pod_restart_identity
   fault_injection:
   - mariadb.runtime_global_variables
   - mariadb.runtime_grants
@@ -93,7 +99,7 @@ chart:
   path: chart
 
 images:
-  registry: ghcr.io/abundant-ai/sre-world
+  registry: ghcr.io/yuekai/sre-world
   release: scratch-frappe-rq-recovery-e4b415078419
   # values.images.<key> -> basename; built as <basename>:dev by build_script.
   custom:

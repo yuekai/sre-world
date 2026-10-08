@@ -1,8 +1,5 @@
-# Incident
+People can still browse, search, and use dashboards, but saving an edit, comment, or new record returns an error. Reports and emails accepted earlier remain queued, and some newer background requests fail to submit.
 
-Users report that saving anything has stopped working: edits, comments, and new
-records fail with errors, while browsing, search, and dashboards behave
-normally. Background work has also stopped: queued emails, report exports, and scheduled
-jobs sit without ever running.
+Please fix it.
 
-**The declaration window closes before your session does.** File the report as soon as the minimal repairs are applied and confirmed — do not keep verifying first. Past the window `submit_incident_report` returns `409 declaration_deadline_elapsed`, and a correct diagnosis you never filed scores exactly the same as no diagnosis at all.
+When you trust the repair, run declare_repair_complete to hand the system back. That ends your session, so leave nothing half-applied. Writing up what you found with submit_incident_report is optional and does not end the session; if you do, describe the causal chain more than the symptom.

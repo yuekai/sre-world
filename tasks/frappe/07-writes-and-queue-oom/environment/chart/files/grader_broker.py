@@ -27,7 +27,11 @@ UPSTREAM_HOST = os.environ.get("GRADER_UPSTREAM_HOST", "loadgen")
 UPSTREAM_PORT = int(os.environ.get("GRADER_UPSTREAM_PORT", "9100"))
 HEADER = "X-SRE-World-Grader-Access"
 ALLOWED_REQUESTS = {
-    ("POST", "/grader/finalize-undeclared"),
+    # Harbor's root environment healthcheck pins the episode clock through this
+    # broker only after evaluating readiness. Brokering keeps the bearer
+    # capability out of the agent's exec container and stops the agent from
+    # choosing t0.
+    ("POST", "/grader/episode-start"),
     ("GET", "/grader/episode_done"),
     ("GET", "/grader/bundle"),
 }

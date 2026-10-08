@@ -212,7 +212,7 @@ async def test_maintenance_epoch_posts_t0_and_releases_after_completed_run(
     profile = PROFILES["maintenance_collision_temporal"]
     event = profile.events[0]
     loadgen = LoadGen(profile, tmp_path / "loadgen.jsonl")
-    loadgen._t0 = 123.0
+    loadgen._bringup_t0 = 123.0
     session = _FakeMaintenanceSession()
     loadgen._session = session  # type: ignore[assignment]
     stages: list[tuple[str, dict[str, Any]]] = []
@@ -234,6 +234,44 @@ async def test_maintenance_epoch_posts_t0_and_releases_after_completed_run(
     )
     assert [stage for stage, _ in stages] == ["epoch_initialized", "manifested"]
     assert stages[-1][1]["release_agent"] is True
+
+
+async def test_bringup_precondition_completes_without_pinning_episode_t0(
+    tmp_path: Path,
+) -> None:
+    from loadgen.runner import LoadGen
+    from loadgen.schedule import PROFILES
+
+    loadgen = LoadGen(
+        PROFILES["maintenance_collision_temporal"],
+        tmp_path / "loadgen.jsonl",
+    )
+    loadgen._session = _FakeMaintenanceSession()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="bringup events are incomplete"):
+        loadgen.signal_episode_start()
+    await loadgen.prepare_bringup()
+
+    assert loadgen.bringup_complete is True
+    assert loadgen._bringup_t0 is not None
+    assert loadgen._t0 is None
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "temporal_events.jsonl").read_text().splitlines()
+    ]
+    assert [row["stage"] for row in rows] == [
+        "planned",
+        "epoch_initialized",
+        "manifested",
+    ]
+    assert all(row["anchor"] == "bringup" for row in rows)
+    assert all(row["ts_s"] >= 0 for row in rows)
+    await loadgen.prepare_bringup()
+    assert len(
+        (tmp_path / "temporal_events.jsonl").read_text().splitlines()
+    ) == len(rows)
+    assert loadgen._temporal_jsonl is not None
+    loadgen._temporal_jsonl.close()
 
 
 async def test_fire_admin_event_auto_revert_activates_then_deactivates(tmp_path: Path) -> None:
@@ -494,6 +532,25 @@ def test_required_and_declaration_events_require_stable_ids() -> None:
             _validate_profile(replace(PROFILES["dev"], events=[event]))
 
 
+def test_readiness_release_requires_the_pre_t0_bringup_anchor() -> None:
+    from dataclasses import replace
+
+    from loadgen.schedule import LoadEvent, PROFILES, _validate_profile
+
+    event = LoadEvent(
+        0.0,
+        0.0,
+        "admin_event",
+        event_name="precondition",
+        event_id="precondition",
+        required=True,
+        release_agent_on_recovery=True,
+        anchor="episode",
+    )
+    with pytest.raises(ValueError, match="anchor='bringup'"):
+        _validate_profile(replace(PROFILES["dev"], events=[event]))
+
+
 def test_message_event_validation_is_failure_closed() -> None:
     from dataclasses import replace
 
@@ -612,12 +669,16 @@ async def test_required_event_task_failure_stops_load(tmp_path: Path) -> None:
 
 async def test_no_declaration_skips_required_declaration_event_without_error(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A null actor is a graded zero, not a broken injector episode."""
+    """A null actor is a graded zero, not a broken injector episode.
+
+    A declaration-anchored event has no anchor when the agent never declares.
+    It used to be the declare DEADLINE that resolved that, after a finalization
+    grace period; it is the window freeze now — same skip, same reason, and no
+    grace constant to tune, because the freeze is unconditional.
+    """
     from dataclasses import replace
 
-    from loadgen import runner as runner_mod
     from loadgen.runner import LoadGen
     from loadgen.schedule import LoadEvent, PROFILES
 
@@ -630,14 +691,24 @@ async def test_no_declaration_skips_required_declaration_event_without_error(
         required=True,
         anchor="declaration",
     )
-    profile = replace(PROFILES["dev"], events=[event])
+    # A sub-second grid: the window watcher waits the real agent window before
+    # freezing, and this test only cares that the freeze resolves the anchor.
+    cycle = (0.02, 5.0, 0.02, 5.0)
+    profile = replace(
+        PROFILES["dev"],
+        events=[event],
+        warmup_s=0.02,
+        cycles=[cycle, cycle],
+        soak_cycles=1,
+        declare_deadline_s=0.1,
+    )
     lg = LoadGen(profile, tmp_path / "loadgen.jsonl")
-    monkeypatch.setattr(runner_mod, "VERIFIER_FINALIZATION_GRACE_S", 0.0)
 
     async def finish_window(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     lg._fire_window = finish_window  # type: ignore[method-assign]
+    lg.signal_episode_start()
     summary = await lg.run()
 
     assert summary["declare_ts_s"] is None

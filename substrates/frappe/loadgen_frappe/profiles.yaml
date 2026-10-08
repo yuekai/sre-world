@@ -2,8 +2,9 @@
 # builtin profiles (loadgen-common/loadgen/profiles.yaml) at sidecar startup.
 #
 # Both mirror the builtin `dev` shape exactly (30s warmup @ 10 rps, 2 ×
-# (20s peak @ 50 rps + 40s trough @ 10 rps), 1 soak cycle, declare deadline
-# 150s — total episode ≈ 210s + grading, inside the 600s verifier budget);
+# (20s peak @ 50 rps + 40s trough @ 10 rps), 1 soak cycle, and a legacy
+# standalone pre-soak length of 150s). D28 derives deployed task length from
+# the task-level post-readiness episode budget;
 # only the drivers differ. Drivers are the three Desk drivers from
 # loadgen_frappe/drivers.py, registered by the frappe sidecar; the runner
 # picks one per arrival via seq % len(drivers).

@@ -41,7 +41,11 @@ _ARENA_NAME = re.compile(
 
 # Byte rewrites applied to OUR files before hashing, so re-hosted image
 # references compare equal to the Arena's originals.
-REGISTRY_REWRITES: list[tuple[bytes, bytes]] = []
+REGISTRY_REWRITES: list[tuple[bytes, bytes]] = [
+    # The original's images are re-hosted byte-for-byte (same digests) under
+    # this fork's registry; references compare equal once the host is mapped back.
+    (b"ghcr.io/yuekai/sre-world/", b"ghcr.io/abundant-ai/sre-world/"),
+]
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,14 @@ ALLOWED_DIFFERENCES: list[Allowed] = [
             "Stamped from an older generator snapshot (deadline-freeze receipt normalized "
             "differently, fewer challenge profiles, older obs NetworkPolicies and evidence "
             "entrypoint); this repo reproduces the newest snapshot (tasks 007, 009-013)."
+        ),
+    ),
+    Allowed(
+        tasks=frozenset({"006"}),
+        paths=frozenset({"tests/verifier/checks.py"}),
+        reason=(
+            "Task 006 carries the older deadline-freeze normalization in checks.py "
+            "(same older snapshot as tasks 008 and 014-019)."
         ),
     ),
     Allowed(

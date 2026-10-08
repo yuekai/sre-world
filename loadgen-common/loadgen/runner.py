@@ -23,27 +23,64 @@ Design goals (per CONTRACTS.md / SPIKE.md):
   ``LoadGen.recent`` (a ``collections.deque``) so the agent actor's
   ``read_metrics`` tool can roll them up without re-reading the JSONL.
 
+ONE EPISODE CLOCK
+-----------------
+``t0`` is pinned by the authenticated episode-start transition at the end of
+Harbor's first successful environment-healthcheck command. Cluster creation,
+Helm install, and every readiness predicate happen before the clock exists.
+Harbor agent setup happens after it and therefore consumes the window. The
+runner waits for :meth:`LoadGen.signal_episode_start` and fails loudly after
+``EPISODE_START_TIMEOUT_S`` rather than idling forever if the healthcheck never
+completes the transition.
+
+The episode after t0 is::
+
+    [0, warmup_s)          warmup, excluded from measurement
+    [0, agent_window_s]    Harbor setup plus agent work; the agent may finish early
+    freeze                 at min(done_signal, agent_window_s): the agent is
+                           terminated through the substrate freezer's graceful
+                           ladder, so nothing it does can touch the graded window
+    [soak_start, +soak_s]  the soak — the ONLY graded window; it always runs and
+                           is always exactly ``soak_duration_s()`` long
+    end
+
+``soak_start`` is the first cycle boundary at or after the freeze completes, so
+the graded window is always cycle-aligned. ``agent_window_s`` is one cycle short
+of the nominal pre-soak schedule end (see :func:`agent_window_s`). That cycle is
+the minimum reserve; if the freezer, config/source capture, or build attestation
+takes longer, the runner keeps repeating the pre-soak cycle shapes under the
+same seeded stream until the resolved boundary. It then switches serially to
+the independently seeded soak stream, so there is neither an idle/cold gap nor
+an overlap between ungraded and graded traffic.
+
+There is no report-intake cutoff. Declaring is purely an early-finish signal; a
+report is recorded whenever it arrives and is never rejected for lateness.
+
 Control API (stable names — the harness imports
 ``from loadgen.runner import LoadGen``):
 
-- ``LoadGen(profile, out_path)``: construct.
-- ``await lg.start(t0)`` / ``await lg.run()``: ``run()`` is the entry point the
-  episode runner awaits; it runs warmup + configured cycles, then — once
-  ``declare()`` has been called — runs ``soak_cycles`` full cycles re-based to
-  the soak-start instant, then stops. ``start(t0)`` pins the clock origin
-  (``run()`` calls it with ``loop.time()`` if not already started).
-- ``lg.declare()``: mark that a resolution was declared "now". If the agent
-  declares before the configured warmup has elapsed, the runner keeps issuing
-  warmup traffic and starts the graded soak at the warmup boundary. If the
-  agent declares after warmup, the soak starts immediately. This makes an
-  OracleAgent that repairs quickly see the same warmed-load soak a real
-  diagnostic agent would see, instead of grading against a cold pool.
+- ``LoadGen(profile, out_path, agent_boundary_hook=...)``: construct. The hook is
+  awaited at the freeze instant and must not return until the agent is provably
+  dead; the runner starts the soak only after it completes.
+- ``lg.signal_episode_start()``: pin ``t0`` (first call wins).
+- ``await lg.run()``: the entry point the episode runner awaits. Waits for the
+  episode-start signal, runs warmup + the pre-soak window, freezes, then runs
+  ``soak_cycles`` full cycles re-based to the soak-start instant and stops.
+- ``lg.declare()``: record that a resolution was declared "now" and request the
+  freeze. If the agent declares before the configured warmup has elapsed, the
+  runner keeps issuing warmup traffic and starts the graded soak at the warmup
+  boundary. This makes an OracleAgent that repairs quickly see the same
+  warmed-load soak a real diagnostic agent would see, instead of grading against
+  a cold pool. Declaring early shortens the agent window; it NEVER shortens the
+  soak.
 - ``lg.stop()``: hard stop — cease firing and tear down ASAP.
 - ``lg.finished``: ``asyncio.Event`` set once the generator has fully stopped,
   drained outstanding requests, and written the summary line.
 - ``lg.recent``: ``deque`` of the most recent record dicts.
-- ``lg.declare_ts_s`` / ``lg.soak_start_s``: declaration / soak-start times
-  (seconds from ``t0``), or ``None``. Mirrors meta.json fields.
+- ``lg.declare_ts_s`` / ``lg.freeze_ts_s`` / ``lg.soak_start_s``: declaration /
+  freeze / soak-start times (seconds from ``t0``). ``declare_ts_s`` is ``None``
+  when no report was filed; the other two are always set on a complete episode.
+  Mirrors meta.json fields.
 
 Module-level ``rollup(records) -> dict`` produces the compact per-phase summary
 used by the agent actor's ``read_metrics`` rollup.
@@ -61,6 +98,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
 import logging
 import math
@@ -94,11 +132,26 @@ logger = logging.getLogger(__name__)
 OUTSTANDING_CAP = 500
 # Per-request total timeout (connect + read), seconds.
 REQUEST_TIMEOUT_S = 10.0
-# Harbor starts the verifier at the same configured boundary that times out the
-# agent. Keep the loadgen alive briefly after declaration intake closes so the
-# verifier-only freezer/finalizer can establish a trusted terminal boundary.
-# This does not extend agent report intake or the offered-load schedule.
-VERIFIER_FINALIZATION_GRACE_S = 30.0
+# How long the loadgen will wait for the packaged healthcheck's final
+# episode-start transition. FAIL LOUDLY: a transition that never succeeds must
+# surface as an infrastructure error, not as a sidecar that hangs until the
+# trial's own ceiling kills it.
+#
+# It has to clear the worst legitimate readiness wait and stay below Harbor's
+# healthcheck ceiling, or this diagnostic may lose the race to Harbor's own
+# failure. 1800 s covers the longest current declared readiness ceiling.
+#
+# It was 5400 — above BOTH ceilings, so the diagnostic below was unreachable and
+# a never-pinned clock always presented as a trial timeout instead.
+EPISODE_START_TIMEOUT_S = float(os.environ.get("EPISODE_START_TIMEOUT_S", "1800"))
+# Hard ceiling for the complete terminal boundary hook (freezer plus every
+# post-freeze evidence capture). The nominal profile carries only one cycle of
+# reserve, which is 10 seconds for lost_wakeup25 and cannot safely bound source
+# and build attestation. Offered load continues beyond that reserve, but not
+# forever: a wedged boundary fails the episode before Harbor's 300-second agent
+# backstop. tools/episode_timing.py carries the offline twin and timing_gate
+# proves the verifier still covers this worst-case continuation.
+AGENT_BOUNDARY_TIMEOUT_S = 240.0
 # How many recent records to retain in-memory for read_metrics rollups.
 RECENT_MAXLEN = 2000
 # SUT endpoint. Default = local spike (app 8000 -> host 18000). Override with
@@ -384,6 +437,118 @@ def _record_keys_ok(rec: dict[str, Any]) -> bool:
     return required.issubset(rec.keys())
 
 
+def next_cycle_boundary_s(profile: Profile, t_s: float) -> float:
+    """First cycle boundary at or after ``t_s`` on the profile's own grid.
+
+    Walks pair by pair from the warmup boundary (cycle durations may differ), so
+    this is correct for the non-uniform profiles too. Times before the warmup
+    boundary resolve to the warmup boundary: the graded soak never starts inside
+    warmup. ``tools/timing_gate.nearest_cycle_boundary_s`` is the offline twin of
+    this walk and ``tools/test_timing_gate.py`` pins the two to the same answer.
+    """
+    warmup_s = float(profile.warmup_s)
+    if t_s <= warmup_s + 1e-9:
+        return warmup_s
+    cycles = [(peak_s, trough_s) for peak_s, _, trough_s, _ in profile.cycles]
+    total = sum(peak + trough for peak, trough in cycles)
+    if total <= 0:
+        return warmup_s
+    cursor = warmup_s
+    index = 0
+    while cursor < t_s - 1e-9:
+        peak, trough = cycles[index % len(cycles)]
+        cursor += peak + trough
+        index += 1
+    return cursor
+
+
+def agent_window_s(profile: Profile) -> float:
+    """The post-readiness episode budget, measured from healthcheck-tail ``t0``.
+
+    The nominal pre-soak schedule deliberately runs ONE CYCLE longer than the
+    agent window. Harbor setup is inside this interval; it is not an
+    agent-thinking budget. That trailing cycle is the minimum boundary reserve;
+    the runtime repeats the same offered stream if the complete boundary needs
+    longer, then starts the graded soak on a cycle boundary with the SUT warm
+    and the agent already dead. Deriving the window here rather than plumbing a
+    second number keeps the runtime contract a pure function of the profile.
+    """
+    end_s = float(profile.schedule_end_s())
+    boundary = next_cycle_boundary_s(profile, end_s)
+    cycles = [(peak_s, trough_s) for peak_s, _, trough_s, _ in profile.cycles]
+    total = sum(peak + trough for peak, trough in cycles)
+    if total <= 0 or boundary <= float(profile.warmup_s) + 1e-9:
+        return end_s
+    # Step back one cycle from the schedule end along the same grid.
+    cursor = float(profile.warmup_s)
+    index = 0
+    previous = cursor
+    while cursor < boundary - 1e-9:
+        previous = cursor
+        peak, trough = cycles[index % len(cycles)]
+        cursor += peak + trough
+        index += 1
+    return previous
+
+
+def _pre_soak_continuation_end_s(profile: Profile) -> float:
+    """Finite cycle boundary covering the longest allowed terminal boundary.
+
+    The public schedule iterators intentionally stop at the profile's declared
+    schedule end. Runtime needs a longer *ungraded* stream when boundary work
+    outlasts that one-cycle reserve, so it asks those same iterators to resolve
+    a temporary, extended profile. Rounding the extension to the profile grid
+    leaves enough stream for an atomic handoff even with non-uniform cycles.
+    """
+    if not math.isfinite(AGENT_BOUNDARY_TIMEOUT_S) or AGENT_BOUNDARY_TIMEOUT_S <= 0:
+        raise RuntimeError(
+            "AGENT_BOUNDARY_TIMEOUT_S must be finite and positive, got "
+            f"{AGENT_BOUNDARY_TIMEOUT_S!r}"
+        )
+    end_s = float(profile.schedule_end_s())
+    if not math.isfinite(end_s):
+        raise RuntimeError(f"profile {profile.name!r} has non-finite schedule end {end_s!r}")
+    return next_cycle_boundary_s(profile, end_s + AGENT_BOUNDARY_TIMEOUT_S)
+
+
+def _iter_continuing_pre_soak_arrivals(
+    profile: Profile,
+) -> Iterable[tuple[float, str]]:
+    """The original seeded pre-soak stream, extended for boundary work.
+
+    No arrival algorithm is duplicated here. A temporary profile is handed
+    back to schedule.py, preserving its RNG/noise discipline. The extension is
+    finite and ungraded; the independent soak iterator is never consumed from
+    this profile.
+    """
+    continuation_end_s = _pre_soak_continuation_end_s(profile)
+    if profile.loop:
+        extended = dataclasses.replace(
+            profile, declare_deadline_s=continuation_end_s
+        )
+        return iter_looped_arrivals(extended)
+
+    cycles = list(profile.cycles)
+    cursor = float(profile.warmup_s) + profile.cycles_duration_s()
+    pattern = list(profile.cycles)
+    index = 0
+    while cursor < continuation_end_s - 1e-9:
+        cycle = pattern[index % len(pattern)]
+        cycles.append(cycle)
+        cursor += float(cycle[0]) + float(cycle[2])
+        index += 1
+    extended = dataclasses.replace(
+        profile,
+        cycles=cycles,
+        declare_deadline_s=cursor,
+    )
+    return (
+        (sched_s, phase)
+        for sched_s, phase in iter_arrivals(extended)
+        if not phase.startswith("soak")
+    )
+
+
 class LoadGen:
     """Open-loop load generator driving the SUT for one episode.
 
@@ -391,8 +556,9 @@ class LoadGen:
 
         lg = LoadGen(PROFILES["dev"], runs/<id>/loadgen.jsonl)
         task = asyncio.create_task(lg.run())
+        lg.signal_episode_start()  # successful healthcheck tail -> t0
         ...                      # episode proceeds; actor works concurrently
-        lg.declare()             # actor declared resolved -> schedule soak window
+        lg.declare()             # actor declared resolved -> freeze -> soak window
         await lg.finished.wait() # run() completes after soak_cycles + drain
         # (or lg.stop() for a hard stop)
     """
@@ -407,33 +573,48 @@ class LoadGen:
             [LoadEvent, Callable[[str, dict[str, Any]], None]], Awaitable[None]
         ]
         | None = None,
+        agent_boundary_hook: Callable[[str], Awaitable[None]] | None = None,
+        pre_soak_recovery_hook: Callable[
+            [aiohttp.ClientSession], Awaitable[dict[str, Any]]
+        ]
+        | None = None,
+        allow_failed_pre_soak_recovery: bool = False,
     ) -> None:
         self.profile = profile
         self.out_path = Path(out_path)
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Control events / flags.
+        self._episode_started = asyncio.Event()
         self._declared = asyncio.Event()
         self._declaration_pending = asyncio.Event()
-        self._accepting_declarations = True
-        # Resolves declaration-relative injector waits on either a real
-        # declaration or a terminal no-declaration/hard-stop path.  Keep this
-        # separate from ``_declared``: setting the latter without a real
-        # declaration makes null actors look like they declared successfully.
+        # Set once the freeze has been requested (by a declaration or by the
+        # agent window elapsing); resolves declaration-relative injector waits
+        # without claiming a declaration that never happened.
+        self._freeze_requested = asyncio.Event()
         self._declaration_resolved = asyncio.Event()
-        # A verifier-authorized graceful undeclared path is distinct from the
-        # hard-stop event: it preserves request draining, required event
-        # completion, and the normal summary while keeping declare_ts_s null.
-        self._undeclared_finalization_requested = asyncio.Event()
+        # Set once the boundary hook has returned and soak_start_s is known.
+        self._soak_scheduled = asyncio.Event()
         self._stopped = asyncio.Event()
         self.finished = asyncio.Event()
 
         # Clock + bookkeeping.
+        self._bringup_t0: float | None = None
+        self._bringup_complete = not any(
+            event.anchor == "bringup" for event in profile.events
+        )
+        self._bringup_lock = asyncio.Lock()
         self._t0: float | None = None
         self.declare_ts_s: float | None = None
+        self.freeze_ts_s: float | None = None
+        self.freeze_reason: str | None = None
         self.soak_start_s: float | None = None
-        self.undeclared_finalize_requested_s: float | None = None
         self.completion_reason: str | None = None
+        self._agent_boundary_hook = agent_boundary_hook
+        self._agent_boundary_task: asyncio.Task[None] | None = None
+        self._pre_soak_recovery_hook = pre_soak_recovery_hook
+        self._allow_failed_pre_soak_recovery = allow_failed_pre_soak_recovery
+        self.pre_soak_recovery_receipt: dict[str, Any] | None = None
 
         # Outstanding-request tracking.
         self._inflight: set[asyncio.Task[None]] = set()
@@ -458,7 +639,7 @@ class LoadGen:
             "correct": 0,
             "incorrect": 0,
             "pool_timeout": 0,  # status 503
-            "rate_limited": 0,  # status 429
+            "throttled": 0,  # status 429
             "error": 0,  # other non-2xx / 5xx (excluding 503)
             "timeout": 0,  # client-side total timeout
         }
@@ -482,21 +663,152 @@ class LoadGen:
     # ------------------------------------------------------------------ #
     # Control API
     # ------------------------------------------------------------------ #
+    @property
+    def bringup_complete(self) -> bool:
+        """Whether every explicit pre-t0 event completed successfully."""
+        return self._bringup_complete
+
+    async def prepare_bringup(self) -> None:
+        """Run readiness-gating temporal events on an ungraded pre-t0 clock.
+
+        A ``bringup`` event must manifest and recover before Harbor's
+        healthcheck can pass ``/episode-ready`` and reach the final
+        ``/grader/episode-start`` POST. This timeline records temporal evidence
+        but never pins episode t0, starts offered load, or consumes the episode
+        window.
+        """
+        async with self._bringup_lock:
+            if self._bringup_complete:
+                return
+            events = [event for event in self.profile.events if event.anchor == "bringup"]
+            if not events:
+                self._bringup_complete = True
+                return
+
+            self._bringup_t0 = asyncio.get_running_loop().time()
+            if self._session is None:
+                timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S)
+                self._session = aiohttp.ClientSession(timeout=timeout)
+            self._open_temporal_ledger()
+            tasks: list[asyncio.Task[None]] = []
+            try:
+                for event in events:
+                    self._record_planned_event(event)
+                    task = asyncio.create_task(
+                        self._fire_scheduled_event(event),
+                        name=f"bringup-event:{event.event_id}",
+                    )
+                    task.add_done_callback(
+                        lambda done, current=event: self._event_task_done(current, done)
+                    )
+                    tasks.append(task)
+                await asyncio.gather(*tasks)
+                self._raise_event_failure()
+                self._bringup_complete = True
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await self._teardown()
+                self.finished.set()
+                raise
+
+    def _open_temporal_ledger(self) -> None:
+        if self._temporal_jsonl is not None:
+            return
+        if not any(event.event_id for event in self.profile.events):
+            return
+        temporal_path = self.out_path.parent / "temporal_events.jsonl"
+        self._temporal_jsonl = temporal_path.open(
+            "x", buffering=1, encoding="utf-8"
+        )
+
+    def _record_planned_event(self, event: LoadEvent) -> None:
+        self._record_temporal_stage(
+            event,
+            "planned",
+            fire_at_s=event.fire_at_s,
+            kind=event.kind,
+            target_service=(
+                event.target_service
+                if event.kind in {"admin_event", "admin_command"}
+                else None
+            ),
+        )
+
     async def start(self, t0: float | None = None) -> None:
         """Pin the clock origin. Idempotent-ish: first call wins, re-call warns."""
         if self._t0 is not None:
             logger.warning("LoadGen.start called again; keeping original t0=%.6f", self._t0)
             return
         self._t0 = asyncio.get_running_loop().time() if t0 is None else t0
+        self._episode_started.set()
         logger.info("LoadGen t0 pinned at loop time %.6f", self._t0)
 
-    def declare(self) -> None:
-        """Signal that a resolution was declared *now*.
+    def signal_episode_start(self) -> bool:
+        """Pin ``t0``. First call wins.
 
-        The runner stops issuing configured-cycle arrivals only once the warmup
-        floor has elapsed, then begins the soak window (``soak_cycles`` full
-        cycles re-based to ``soak_start_s``). Idempotent: subsequent calls are
-        ignored with a warning.
+        This is THE episode origin. Harbor's generated healthcheck invokes it
+        only after every readiness predicate succeeds and before Harbor setup.
+        Returns True if this call pinned the clock.
+        """
+        if not self._bringup_complete:
+            raise RuntimeError(
+                "episode-start refused: required bringup events are incomplete"
+            )
+        if self._t0 is not None:
+            logger.info(
+                "episode-start signal after t0 was already pinned at %.6f; ignoring",
+                self._t0,
+            )
+            return False
+        self._t0 = asyncio.get_running_loop().time()
+        self._episode_started.set()
+        logger.info(
+            "LoadGen t0 pinned by post-readiness Harbor healthcheck at loop time %.6f",
+            self._t0,
+        )
+        return True
+
+    async def await_episode_start(self, timeout_s: float | None = None) -> None:
+        """Block until the episode-start transition pins t0; FAIL LOUDLY."""
+        if self._t0 is not None:
+            return
+        budget = EPISODE_START_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        logger.info("waiting up to %.0fs for the episode-start transition", budget)
+        try:
+            await asyncio.wait_for(self._episode_started.wait(), timeout=budget)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise RuntimeError(
+                f"no episode-start signal within {budget:.0f}s: Harbor's environment "
+                "healthcheck never pinned the clock. Refusing to run an unmeasured "
+                "episode; inspect the healthcheck, loadgen readiness, and grader "
+                "capability."
+            ) from exc
+
+    def set_agent_boundary_hook(
+        self, hook: Callable[[str], Awaitable[None]] | None
+    ) -> None:
+        """Install the freeze hook after construction.
+
+        The hook closes over the LoadGen it belongs to, so a substrate sidecar
+        cannot build it before the object exists. Rejected once a freeze is
+        already in flight: swapping the boundary underneath a running freeze
+        would silently skip the snapshot the graded window is compared against.
+        """
+        if self._freeze_requested.is_set():
+            raise RuntimeError("cannot replace the agent boundary hook after freeze")
+        self._agent_boundary_hook = hook
+
+    def declare(self) -> None:
+        """Record that a resolution was declared *now* and request the freeze.
+
+        Declaring is an EARLY-FINISH SIGNAL, nothing more: there is no deadline
+        it can miss. The runner keeps issuing configured-cycle arrivals until the
+        boundary hook has frozen the agent and the soak boundary is resolved,
+        then runs the soak (``soak_cycles`` full cycles re-based to
+        ``soak_start_s``). Idempotent: subsequent calls are ignored with a
+        warning.
         """
         if self._stopped.is_set():
             logger.warning("LoadGen.declare called after stop; ignoring")
@@ -504,117 +816,155 @@ class LoadGen:
         if self._declared.is_set():
             logger.warning("LoadGen.declare called again; ignoring (already declared)")
             return
-        if self._undeclared_finalization_requested.is_set():
-            logger.warning("LoadGen.declare called after undeclared finalization; ignoring")
-            return
         if self._t0 is None:
             raise RuntimeError("LoadGen.declare called before start()/run() pinned t0")
         self.declare_ts_s = asyncio.get_running_loop().time() - self._t0
-        self.soak_start_s = self._resolve_soak_start(self.declare_ts_s)
         self._declaration_pending.clear()
         self._declared.set()
-        self._declaration_resolved.set()
-        logger.info(
-            "LoadGen DECLARE at %.3fs from t0 -> soak window begins at %.3fs",
-            self.declare_ts_s,
-            self.soak_start_s,
-        )
+        logger.info("LoadGen DECLARE at %.3fs from t0", self.declare_ts_s)
+        self.request_freeze("declared")
 
-    def _resolve_soak_start(self, declare_s: float) -> float:
-        """Resolve the graded soak boundary without moving an external phase grid."""
-        start_s = max(declare_s, self.profile.warmup_s)
-        if not self.profile.align_soak_to_cycle:
-            return start_s
-        cycle_s = self.profile.cycles[0][0] + self.profile.cycles[0][2]
-        elapsed = max(0.0, start_s - self.profile.warmup_s)
-        cycles = math.ceil((elapsed / cycle_s) - 1e-12)
-        return self.profile.warmup_s + cycles * cycle_s
+    def _resolve_soak_start(self, freeze_s: float) -> float:
+        """The cycle boundary the graded soak starts on.
+
+        Always rounds UP to the profile's own cycle grid (this used to be the
+        opt-in ``align_soak_to_cycle`` behaviour). The soak is the only graded
+        window, so it must sit on whole cycles no matter when the agent finished
+        — otherwise an early declare grades a partial cycle against bands
+        calibrated on whole ones.
+        """
+        return next_cycle_boundary_s(self.profile, max(freeze_s, self.profile.warmup_s))
+
+    def request_freeze(self, reason: str) -> bool:
+        """Start the terminal agent boundary. First caller wins.
+
+        ``reason`` is ``"declared"`` (the agent signalled done) or
+        ``"window_elapsed"`` (the agent used its whole window). Both run the same
+        boundary hook and both are followed by the same soak.
+        """
+        if self._freeze_requested.is_set():
+            return False
+        if self._t0 is None:
+            raise RuntimeError("LoadGen.request_freeze called before t0 was pinned")
+        self.freeze_reason = reason
+        self._freeze_requested.set()
+        self._declaration_resolved.set()
+        self._agent_boundary_task = asyncio.create_task(
+            self._run_agent_boundary(reason), name="agent-boundary"
+        )
+        return True
+
+    async def _watch_agent_window(self) -> None:
+        """Freeze the agent the moment its window elapses, declaration or not.
+
+        This is the replacement for the old declare-deadline watcher. It does not
+        reject anything: it simply ends the agent phase at
+        :func:`agent_window_s`, after which the soak runs exactly as it would
+        have for an agent that declared.
+        """
+        assert self._t0 is not None
+        window_s = agent_window_s(self.profile)
+        target = self._t0 + window_s
+        while not self._stopped.is_set() and not self._freeze_requested.is_set():
+            remaining = target - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(
+                    self._freeze_requested.wait(), timeout=min(remaining, 0.5)
+                )
+            except asyncio.TimeoutError:
+                continue
+        if self._stopped.is_set() or self._freeze_requested.is_set():
+            return
+        logger.info(
+            "agent window %.1fs elapsed with no declaration; freezing the agent "
+            "and running the soak",
+            window_s,
+        )
+        self.request_freeze("window_elapsed")
+
+    async def _run_agent_boundary(self, reason: str) -> None:
+        """Freeze the agent, then resolve the soak boundary.
+
+        The hook must not return until the agent is provably dead: everything
+        after it is the graded window. It is awaited CONCURRENTLY with the
+        pre-soak stream so offered load stays continuous while the freezer runs
+        — the soak boundary is only published once the hook has returned.
+        """
+        assert self._t0 is not None
+        try:
+            if self._agent_boundary_hook is not None:
+                try:
+                    await asyncio.wait_for(
+                        self._agent_boundary_hook(reason),
+                        timeout=AGENT_BOUNDARY_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError(
+                        "agent boundary did not complete within "
+                        f"{AGENT_BOUNDARY_TIMEOUT_S:g}s; refusing to stop "
+                        "pre-soak offered load or open an unprotected graded soak"
+                    ) from exc
+            self.freeze_ts_s = asyncio.get_running_loop().time() - self._t0
+            self.soak_start_s = self._resolve_soak_start(self.freeze_ts_s)
+            continuation_end_s = _pre_soak_continuation_end_s(self.profile)
+            if self.soak_start_s > continuation_end_s + 1e-9:
+                raise RuntimeError(
+                    "resolved soak boundary exceeds the bounded pre-soak "
+                    f"continuation: soak_start_s={self.soak_start_s:g}, "
+                    f"continuation_end_s={continuation_end_s:g}"
+                )
+            logger.info(
+                "LoadGen agent boundary (%s) complete at %.3fs -> soak window begins at %.3fs",
+                reason,
+                self.freeze_ts_s,
+                self.soak_start_s,
+            )
+        finally:
+            # Wake the arrival loop on success *or failure*. On failure it
+            # observes the boundary task exception and aborts instead of
+            # consuming the finite continuation and then idling.
+            self._soak_scheduled.set()
 
     def begin_declaration(self) -> bool:
         """Hold the pre-soak phase while an accepted declaration is finalized.
 
-        Returns false once the deadline/run has closed declaration intake. The
-        check and event update are synchronous so the HTTP handler and runner
-        cannot cross the boundary and accidentally acknowledge a late report.
+        Returns False only when a declaration has already been accepted or the
+        episode is over — NEVER because a report arrived late. The episode
+        window is not a report-intake deadline, and the retired late-submission
+        status has no code path to come from.
         """
         if (
-            not self._accepting_declarations
+            self._declared.is_set()
             or self.finished.is_set()
             or self._stopped.is_set()
-            or self._undeclared_finalization_requested.is_set()
         ):
             return False
         self._declaration_pending.set()
         return True
 
-    def request_undeclared_finalization(self, *, requested_s: float | None = None) -> bool:
-        """Win the undeclared lifecycle path and close declaration intake.
-
-        The grader HTTP layer serializes this call with declaration acceptance
-        and freezes UID 10001 first. This defensive state check keeps direct
-        callers from converting a pending or accepted declaration into null.
-        """
-        if self._t0 is None:
-            raise RuntimeError(
-                "LoadGen.request_undeclared_finalization called before start()/run() pinned t0"
-            )
-        if self._undeclared_finalization_requested.is_set():
-            return True
-        if (
-            self._declaration_pending.is_set()
-            or self.declare_ts_s is not None
-            or self.finished.is_set()
-            or self._stopped.is_set()
-        ):
-            return False
-        self._accepting_declarations = False
-        if requested_s is None:
-            requested_s = asyncio.get_running_loop().time() - self._t0
-        if requested_s < 0:
-            raise ValueError(
-                f"undeclared finalization request timestamp must be non-negative: {requested_s}"
-            )
-        self.undeclared_finalize_requested_s = requested_s
-        self._undeclared_finalization_requested.set()
-        self._declaration_resolved.set()
-        logger.info(
-            "LoadGen undeclared finalization requested at %.3fs; evidence floor %.3fs",
-            self.undeclared_finalize_requested_s,
-            self.profile.effective_undeclared_evidence_min_s(),
-        )
-        return True
-
-    async def _hold_verifier_finalization_grace(self) -> None:
-        """Leave a verifier-only terminal window after report intake closes."""
-        if (
-            self.declare_ts_s is not None
-            or self._undeclared_finalization_requested.is_set()
-            or self._stopped.is_set()
-        ):
-            return
-        try:
-            await asyncio.wait_for(
-                self._undeclared_finalization_requested.wait(),
-                timeout=VERIFIER_FINALIZATION_GRACE_S,
-            )
-        except TimeoutError:
-            logger.info(
-                "verifier finalization grace %.1fs elapsed without a request",
-                VERIFIER_FINALIZATION_GRACE_S,
-            )
-
-    def close_declarations(self) -> bool:
-        """Close intake unless an accepted declaration is still in flight."""
-        if self._declaration_pending.is_set():
-            return False
-        self._accepting_declarations = False
-        return True
-
     async def _finish_pre_soak_boundary(self) -> None:
-        """Wait for an accepted declaration's freezer boundary, if any."""
-        if self._declaration_pending.is_set():
-            await self._declared.wait()
-        self._accepting_declarations = False
+        """Wait for the freeze to complete and the soak boundary to be published."""
+        if self._stopped.is_set():
+            return
+        if not self._freeze_requested.is_set():
+            self.request_freeze("window_elapsed")
+        assert self._agent_boundary_task is not None
+        await self._agent_boundary_task
+        if self.soak_start_s is None:
+            raise RuntimeError(
+                "agent boundary returned without publishing soak_start_s"
+            )
+
+    def _raise_agent_boundary_failure(self) -> None:
+        """Propagate a completed boundary failure into the arrival loop."""
+        task = self._agent_boundary_task
+        if task is None or not task.done() or task.cancelled():
+            return
+        failure = task.exception()
+        if failure is not None:
+            raise failure
 
     def stop(self) -> None:
         """Hard stop: cease firing new arrivals and tear down ASAP."""
@@ -626,6 +976,7 @@ class LoadGen:
         # the timestamp remains None.
         self._declared.set()
         self._declaration_resolved.set()
+        self._soak_scheduled.set()
 
     # ------------------------------------------------------------------ #
     # Main run loop
@@ -636,36 +987,28 @@ class LoadGen:
         Returns the summary dict (also written as the final JSONL line).
         FAIL LOUDLY: any unexpected error propagates after teardown.
         """
+        await self.prepare_bringup()
         if self._t0 is None:
-            await self.start()
+            # Readiness is outside the clock; Harbor setup is not. Park until
+            # the packaged healthcheck completes its final start transition.
+            await self.await_episode_start()
         assert self._t0 is not None
 
-        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S)
-        self._session = aiohttp.ClientSession(timeout=timeout)
+        if self._session is None:
+            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S)
+            self._session = aiohttp.ClientSession(timeout=timeout)
         # Line-buffered append; one JSON object per line.
         self._jsonl = self.out_path.open("a", buffering=1, encoding="utf-8")
 
         temporal_events = [ev for ev in self.profile.events if ev.event_id]
         if temporal_events:
-            temporal_path = self.out_path.parent / "temporal_events.jsonl"
             # One artifact belongs to exactly one episode.  Reusing a non-empty
             # rundir would make temporal histories ambiguous, so refuse it.
             try:
-                self._temporal_jsonl = temporal_path.open(
-                    "x", buffering=1, encoding="utf-8"
-                )
+                self._open_temporal_ledger()
                 for ev in temporal_events:
-                    self._record_temporal_stage(
-                        ev,
-                        "planned",
-                        fire_at_s=ev.fire_at_s,
-                        kind=ev.kind,
-                        target_service=(
-                            ev.target_service
-                            if ev.kind in {"admin_event", "admin_command"}
-                            else None
-                        ),
-                    )
+                    if ev.anchor != "bringup":
+                        self._record_planned_event(ev)
             except BaseException:
                 await self._teardown()
                 self.finished.set()
@@ -678,7 +1021,8 @@ class LoadGen:
         scheduled_events = [
             ev
             for ev in self.profile.events
-            if ev.kind
+            if ev.anchor != "bringup"
+            and ev.kind
             in {
                 "admin_event",
                 "admin_command",
@@ -704,91 +1048,78 @@ class LoadGen:
             self._ws_jsonl = self._ws_out_path().open("a", buffering=1, encoding="utf-8")
             ws_tasks.append(asyncio.create_task(self._listen_ws()))
 
+        window_task = asyncio.create_task(
+            self._watch_agent_window(), name="agent-window-watcher"
+        )
+
         try:
-            if self.profile.loop:
-                # LOOP MODE: stream the repeating pre-soak window lazily (a
-                # multi-hour window must not be materialized), then — on a
-                # declare — fire the soak stream, which loop mode draws from an
-                # independent seeded RNG with times from 0 (rebased here to the
-                # soak-start instant). Generation is bounded by
-                # declare_deadline_s, so a never-declaring episode still ends.
-                await self._fire_window(iter_looped_arrivals(self.profile), rebase_from=None)
-
-                await self._hold_pre_soak_duration_floor()
-
-                await self._finish_pre_soak_boundary()
-
-                if not self._stopped.is_set():
-                    if self._declared.is_set() and self.declare_ts_s is not None:
-                        assert self.soak_start_s is not None
-                        await self._fire_window(
-                            iter_soak_arrivals(self.profile),
-                            rebase_from=(0.0, self.soak_start_s),
-                        )
-                        await self._hold_soak_duration_floor()
-                    else:
-                        logger.info(
-                            "LoadGen loop window reached declare_deadline_s with no "
-                            "declaration; stopping without soak (declare_ts_s=None)",
-                        )
-            else:
-                # Split arrivals by label into pre-soak and soak.
-                arrivals = list(iter_arrivals(self.profile))
-                pre_soak = [(t, p) for (t, p) in arrivals if not p.startswith("soak")]
-                soak = [(t, p) for (t, p) in arrivals if p.startswith("soak")]
-                schedule_end_s = self.profile.schedule_end_s()
-
-                # Phase 1: warmup + configured cycles, until declaration or stop.
-                await self._fire_window(pre_soak, rebase_from=None)
-
-                await self._hold_pre_soak_duration_floor()
-
-                await self._finish_pre_soak_boundary()
-
-                # If we were stopped (no soak), skip soak.
-                if not self._stopped.is_set():
-                    # Wait for declaration if it has not happened yet. The episode
-                    # runner declares; the null actor never does, in which case the
-                    # pre-soak window has already elapsed and we proceed to stop
-                    # WITHOUT a soak (declare_ts_s stays None).
-                    if self._declared.is_set() and self.declare_ts_s is not None:
-                        # Phase 2: soak — re-base soak arrivals to the soak-start
-                        # instant so they form `soak_cycles` cycles starting after
-                        # the warmup floor (for early declares) or immediately (for
-                        # post-warmup declares).
-                        assert self.soak_start_s is not None
-                        await self._fire_window(
-                            soak,
-                            rebase_from=(schedule_end_s, self.soak_start_s),
-                        )
-                        await self._hold_soak_duration_floor()
-                    else:
-                        logger.info(
-                            "LoadGen schedule reached end with no declaration; "
-                            "stopping without soak (declare_ts_s=None)",
-                        )
-
-            if not self._stopped.is_set() and self.declare_ts_s is None:
-                await self._hold_verifier_finalization_grace()
+            # The pre-soak iterator repeats the agent-window shapes through the
+            # complete boundary hook, even when it outlasts the nominal
+            # one-cycle reserve. It is finite at the hard boundary timeout.
+            await self._fire_window(
+                _iter_continuing_pre_soak_arrivals(self.profile),
+                rebase_from=None,
+            )
+            await self._finish_pre_soak_boundary()
 
             if not self._stopped.is_set():
-                if self.declare_ts_s is not None:
-                    self.completion_reason = "declared_soak_complete"
-                elif self._undeclared_finalization_requested.is_set():
-                    self.completion_reason = "verifier_finalized_without_declaration"
-                else:
-                    self.completion_reason = "natural_deadline_without_declaration"
+                if self._pre_soak_recovery_hook is not None:
+                    # No accepted pre-soak request may race the recovery census.
+                    # Drain first, then let the substrate verify its retained
+                    # backlog. Rebase the independently seeded soak after that
+                    # bounded recovery so delayed recovery never compresses or
+                    # bursts the graded load shape.
+                    await self._drain()
+                    assert self._session is not None
+                    receipt = await self._pre_soak_recovery_hook(self._session)
+                    if (
+                        not isinstance(receipt, dict)
+                        or not isinstance(receipt.get("pass"), bool)
+                        or (
+                            receipt["pass"] is False
+                            and not self._allow_failed_pre_soak_recovery
+                        )
+                    ):
+                        raise RuntimeError(
+                            "pre-soak recovery hook returned no permitted receipt: "
+                            f"{receipt!r}"
+                        )
+                    self.pre_soak_recovery_receipt = receipt
+                    assert self._t0 is not None
+                    prior_soak_start = self.soak_start_s
+                    if prior_soak_start is None:
+                        raise RuntimeError(
+                            "pre-soak recovery completed without a scheduled soak boundary"
+                        )
+                    self.soak_start_s = max(
+                        prior_soak_start,
+                        asyncio.get_running_loop().time() - self._t0,
+                    )
+                    logger.info(
+                        "LoadGen bounded pre-soak recovery pass=%s; rebased graded "
+                        "soak from %.3fs to %.3fs",
+                        receipt["pass"],
+                        prior_soak_start,
+                        self.soak_start_s,
+                    )
 
-            # No declaration can arrive after the configured pre-soak window
-            # ends.  Release declaration-relative injectors so they finish as
-            # explicitly skipped, rather than turning an intentional no-op
-            # calibration into an infrastructure error.
-            if not self._stopped.is_set() and self.declare_ts_s is None:
-                logger.info(
-                    "LoadGen declaration window closed with no declaration; "
-                    "skipping declaration-anchored events",
+                # One serial handoff: after pre-soak has stopped strictly before
+                # soak_start_s, consume the independently seeded graded stream.
+                # Its timestamps start at zero for every profile, so boundary
+                # duration cannot move its RNG draws or shorten its duration.
+                assert self.soak_start_s is not None
+                await self._fire_window(
+                    iter_soak_arrivals(self.profile),
+                    rebase_from=(0.0, self.soak_start_s),
                 )
-                self._declaration_resolved.set()
+                await self._hold_soak_duration_floor()
+
+            if not self._stopped.is_set():
+                self.completion_reason = (
+                    "declared_soak_complete"
+                    if self.declare_ts_s is not None
+                    else "window_elapsed_soak_complete"
+                )
 
             # Drain outstanding requests so their records land before summary.
             # On a HARD STOP we skip the (potentially unbounded) drain — those
@@ -814,6 +1145,8 @@ class LoadGen:
             logger.info("LoadGen summary: %s", summary)
             return summary
         finally:
+            window_task.cancel()
+            await asyncio.gather(window_task, return_exceptions=True)
             for t in (*event_tasks, *ws_tasks):
                 t.cancel()
             teardown_results = await asyncio.gather(
@@ -869,8 +1202,7 @@ class LoadGen:
     def _record_temporal_stage(self, ev: LoadEvent, stage: str, **evidence: Any) -> None:
         if self._temporal_jsonl is None:
             raise RuntimeError("temporal ledger is not open")
-        if self._t0 is None:
-            raise RuntimeError("temporal stage recorded before LoadGen clock was pinned")
+        origin = self._event_origin(ev)
         reserved = {
             "run_id", "episode_id", "event_id", "stage", "ts_s", "anchor", "required"
         }
@@ -882,7 +1214,7 @@ class LoadGen:
             "episode_id": self._temporal_episode_id,
             "event_id": ev.event_id,
             "stage": stage,
-            "ts_s": round(asyncio.get_running_loop().time() - self._t0, 6),
+            "ts_s": round(asyncio.get_running_loop().time() - origin, 6),
             "anchor": ev.anchor,
             "required": ev.required,
             **{key: value for key, value in evidence.items() if value is not None},
@@ -934,18 +1266,18 @@ class LoadGen:
             raise RuntimeError(f"unsupported scheduled event kind {ev.kind!r}")
 
     async def _fire_maintenance_epoch(self, ev: LoadEvent) -> None:
-        """Pin a real maintenance controller to t0 and prove the first collision.
+        """Pin a real maintenance controller to its anchor and prove the collision.
 
         The agent-ready gate depends on a completed unsafe checkpoint, so a
         golden repair cannot race ahead of the incident it is meant to diagnose.
         Transport failures, malformed state, and controller-recorded failures are
         infrastructure errors and propagate immediately.
         """
-        assert self._t0 is not None
         assert self._session is not None
+        origin = self._event_origin(ev)
         base_url = f"http://{ev.target_service}:8081"
-        epoch_id = f"{self._temporal_episode_id}:{self._t0:.9f}"
-        payload = {"epoch_id": epoch_id, "monotonic_s": self._t0}
+        epoch_id = f"{self._temporal_episode_id}:{origin:.9f}"
+        payload = {"epoch_id": epoch_id, "monotonic_s": origin}
         try:
             async with self._session.post(f"{base_url}/v1/epoch", json=payload) as resp:
                 body = await resp.text()
@@ -1004,8 +1336,15 @@ class LoadGen:
                 )
             await asyncio.sleep(0.5)
 
+    def _event_origin(self, ev: LoadEvent) -> float:
+        origin = self._bringup_t0 if ev.anchor == "bringup" else self._t0
+        if origin is None:
+            raise RuntimeError(
+                f"event {(ev.event_id or ev.event_name)!r} has no {ev.anchor} clock"
+            )
+        return origin
+
     async def _wait_for_event_anchor(self, ev: LoadEvent) -> bool:
-        assert self._t0 is not None
         if ev.anchor == "declaration":
             await self._declaration_resolved.wait()
             if self.declare_ts_s is None:
@@ -1013,7 +1352,9 @@ class LoadGen:
             base_s = self.declare_ts_s
         else:
             base_s = 0.0
-        delay = (self._t0 + base_s + ev.fire_at_s) - asyncio.get_running_loop().time()
+        delay = (
+            self._event_origin(ev) + base_s + ev.fire_at_s
+        ) - asyncio.get_running_loop().time()
         if delay > 0:
             await asyncio.sleep(delay)
         return True
@@ -1032,7 +1373,6 @@ class LoadGen:
         collapse must be broken (not reverted). Existing profiles leave auto_revert=False, so
         the revert branch never runs for them (byte-identical). Cancelled cleanly on teardown.
         """
-        assert self._t0 is not None
         assert self._session is not None
         if not already_waited:
             if not await self._wait_for_event_anchor(ev):
@@ -1724,8 +2064,8 @@ class LoadGen:
 
         The loop honors open-loop semantics: sleep until each arrival's target
         time, but if we are already past it, fire immediately (never skip). The
-        pre-soak window exits once ``stop()`` fires, or once ``declare()`` fires
-        and the warmup floor has elapsed.
+        pre-soak window exits once ``stop()`` fires or the completed agent
+        boundary publishes the cycle-aligned soak start.
         """
         assert self._t0 is not None
         loop = asyncio.get_running_loop()
@@ -1734,6 +2074,7 @@ class LoadGen:
         for orig_sched_s, phase in arrivals:
             if self._stopped.is_set():
                 return
+            self._raise_agent_boundary_failure()
             # In the pre-soak window, a declaration ends configured-cycle load
             # only after the warmup floor. If the agent declares during warmup,
             # keep issuing warmup arrivals until warmup_s, then switch to soak.
@@ -1767,11 +2108,20 @@ class LoadGen:
                     raise
                 if self._stopped.is_set():
                     return
+                self._raise_agent_boundary_failure()
                 if is_pre_soak and self._should_end_pre_soak(orig_sched_s):
                     return
             # else: behind schedule -> fire immediately, do not skip.
 
             self._fire(phase, sched_s)
+
+        if is_pre_soak and not self._stopped.is_set():
+            self._raise_agent_boundary_failure()
+            if not self._soak_scheduled.is_set():
+                raise RuntimeError(
+                    "bounded pre-soak continuation exhausted before the agent "
+                    "boundary resolved"
+                )
 
     async def _hold_soak_duration_floor(self) -> None:
         """Keep the soak clock honest after its final sampled arrival.
@@ -1792,56 +2142,24 @@ class LoadGen:
             except asyncio.TimeoutError:
                 continue
 
-    async def _hold_pre_soak_duration_floor(self) -> None:
-        """Hold a requested undeclared path to its authorized terminal boundary.
-
-        Poisson streams have no sentinel arrival at a phase boundary. Without
-        this hold a verifier-finalized episode could summarize after its last
-        sampled request, before the configured evidence floor actually elapsed.
-        The natural no-signal path retains its historical end-of-stream timing.
-        """
-        if self._t0 is None:
-            raise RuntimeError("cannot enforce pre-soak duration without a pinned clock")
-        if not self._undeclared_finalization_requested.is_set():
-            return
-        loop = asyncio.get_running_loop()
-        while not self._stopped.is_set() and self.declare_ts_s is None:
-            boundary_s = self.profile.effective_undeclared_evidence_min_s()
-            remaining = self._t0 + boundary_s - loop.time()
-            if remaining <= 0:
-                return
-            if self._declaration_resolved.is_set():
-                try:
-                    await asyncio.wait_for(self._stopped.wait(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    return
-                continue
-            try:
-                await asyncio.wait_for(self._declaration_resolved.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                return
-
     def _should_end_pre_soak(self, orig_sched_s: float) -> bool:
-        """Return whether the configured schedule should yield to soak now."""
-        if self._undeclared_finalization_requested.is_set():
-            if self._t0 is None:
-                raise RuntimeError("undeclared finalization checked before t0 was pinned")
-            elapsed_s = asyncio.get_running_loop().time() - self._t0
-            if elapsed_s >= self.profile.effective_undeclared_evidence_min_s():
-                return True
-        if not self._declared.is_set() or self.declare_ts_s is None:
-            return False
+        """Return whether the configured schedule should yield to soak now.
+
+        Only the resolved soak boundary ends the pre-soak window: while the
+        freeze ladder runs, offered load stays continuous so the graded soak
+        never opens on a cold pool.
+        """
         if self.soak_start_s is None:
-            self.soak_start_s = self._resolve_soak_start(self.declare_ts_s)
+            return False
         return orig_sched_s >= self.soak_start_s
 
     async def _sleep_until_pre_soak_target(self, target: float, orig_sched_s: float) -> None:
         """Sleep to a pre-soak arrival, waking early only when soak may start.
 
-        A declaration after warmup should interrupt a long configured-cycle gap
-        immediately. A declaration during warmup should *not* make the next
-        warmup arrival fire early; it keeps the warmup clock honest and lets the
-        soak begin at ``profile.warmup_s``.
+        A freeze after warmup should interrupt a long configured-cycle gap
+        immediately. A freeze during warmup should *not* make the next warmup
+        arrival fire early; it keeps the warmup clock honest and lets the soak
+        begin at ``profile.warmup_s``.
         """
         loop = asyncio.get_running_loop()
         while True:
@@ -1854,30 +2172,16 @@ class LoadGen:
             if delay <= 0:
                 return
 
-            if self._declaration_resolved.is_set():
-                if self._undeclared_finalization_requested.is_set():
-                    assert self._t0 is not None
-                    floor_delay = (
-                        self._t0
-                        + self.profile.effective_undeclared_evidence_min_s()
-                        - loop.time()
-                    )
-                    if floor_delay <= 0:
-                        return
-                    try:
-                        await asyncio.wait_for(
-                            self._stopped.wait(), timeout=min(delay, floor_delay)
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                else:
-                    await asyncio.sleep(delay)
+            if self._soak_scheduled.is_set():
+                self._raise_agent_boundary_failure()
+                await asyncio.sleep(delay)
                 continue
 
             try:
-                await asyncio.wait_for(self._declaration_resolved.wait(), timeout=delay)
+                await asyncio.wait_for(self._soak_scheduled.wait(), timeout=delay)
             except asyncio.TimeoutError:
-                return  # full delay elapsed without declaration -> normal arrival
+                return  # full delay elapsed without a soak boundary -> normal arrival
+            self._raise_agent_boundary_failure()
 
     # ------------------------------------------------------------------ #
     # Phase-4 WS fan-out: open-loop delivery listener
@@ -2194,7 +2498,7 @@ class LoadGen:
         if status == 503:
             self._counts["pool_timeout"] += 1
         elif status == 429:
-            self._counts["rate_limited"] += 1
+            self._counts["throttled"] += 1
         else:
             self._counts["error"] += 1
 
@@ -2280,19 +2584,19 @@ class LoadGen:
         c = self._counts
         offered = c["offered"]
         non_dropped = offered  # dropped are excluded from offered by construction
-        errors = c["pool_timeout"] + c["rate_limited"] + c["error"] + c["timeout"]
+        errors = c["pool_timeout"] + c["throttled"] + c["error"] + c["timeout"]
         completed = c["ok"] + errors
         return {
             "summary": True,
             "profile": "load",
             "t0_loop": self._t0,
             "declare_ts_s": self.declare_ts_s,
+            "freeze_ts_s": self.freeze_ts_s,
+            "freeze_reason": self.freeze_reason,
             "soak_start_s": self.soak_start_s,
+            "agent_window_s": agent_window_s(self.profile),
+            "soak_s": self.profile.soak_duration_s(),
             "completion_reason": self.completion_reason,
-            "undeclared_finalize_requested_s": self.undeclared_finalize_requested_s,
-            "undeclared_evidence_min_s": (
-                self.profile.effective_undeclared_evidence_min_s()
-            ),
             "total_arrivals": offered + c["dropped"],
             "offered": offered,
             "dropped": c["dropped"],
@@ -2301,7 +2605,7 @@ class LoadGen:
             "correct": c["correct"],
             "incorrect": c["incorrect"],
             "pool_timeout": c["pool_timeout"],
-            "rate_limited": c["rate_limited"],
+            "throttled": c["throttled"],
             "error": c["error"],
             "timeout": c["timeout"],
             "error_rate": (errors / non_dropped) if non_dropped else None,
@@ -2370,7 +2674,7 @@ def rollup(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
         {
           "<phase>": {"offered": int, "ok": int, "correct": int,
-                      "pool_timeout": int, "rate_limited": int, "error": int,
+                      "pool_timeout": int, "throttled": int, "error": int,
                       "timeout": int, "dropped": int,
                       "p99_latency_ms": float|null, "error_rate": float|null,
                       "goodput_ratio": float|null},
@@ -2388,7 +2692,7 @@ def rollup(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "ok": 0,
                 "correct": 0,
                 "pool_timeout": 0,
-                "rate_limited": 0,
+                "throttled": 0,
                 "error": 0,
                 "timeout": 0,
                 "dropped": 0,
@@ -2422,14 +2726,14 @@ def rollup(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             elif status == 503:
                 b["pool_timeout"] += 1
             elif status == 429:
-                b["rate_limited"] += 1
+                b["throttled"] += 1
             else:
                 b["error"] += 1
 
     out: dict[str, Any] = {}
     for name, b in phases.items():
         offered = b["offered"]
-        errors = b["pool_timeout"] + b["rate_limited"] + b["error"] + b["timeout"]
+        errors = b["pool_timeout"] + b["throttled"] + b["error"] + b["timeout"]
         p99 = _percentile(lat_by_phase[name], 99.0)
         out[name] = {
             **b,

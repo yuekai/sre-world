@@ -254,6 +254,9 @@ def validate_runtime_tier(spec: dict[str, Any], sub) -> None:
     if mariadb["kind"] == "grant_revocation":
         _validate_runtime_grant_revocation(mariadb, sub)
         return
+    if mariadb["kind"] in _COMPOUND_KINDS:
+        _validate_runtime_compound(mariadb, sub)
+        return
     if mariadb["kind"] != "global_variable":
         _die(
             "runtime fault: only kinds global_variable and grant_revocation "
@@ -425,6 +428,63 @@ def _validate_runtime_grant_revocation(mariadb: dict[str, Any], sub: Any) -> Non
         )
 
 
+# Compound runtime faults: read_only plus one (global_and_grant) or exactly the
+# INSERT+UPDATE pair (global_and_grants) of site-schema grants revoked. The
+# value is the injector's JSON payload; these rules mirror its activation plan
+# (loadgen_sidecar._mariadb_fault_plan) so an unactivatable fault cannot be authored.
+_COMPOUND_KINDS = {"global_and_grant", "global_and_grants"}
+
+
+def _validate_runtime_compound(mariadb: dict[str, Any], sub: Any) -> None:
+    import json
+
+    if mariadb["variable"] != "read_only":
+        _die("runtime fault: compound faults combine grants with the read_only global only")
+    raw = mariadb["value"]
+    try:
+        compound = json.loads(raw) if isinstance(raw, str) else None
+    except json.JSONDecodeError:
+        compound = None
+    if not isinstance(compound, dict) or not isinstance(compound.get("global"), bool):
+        _die("runtime fault: compound value must be a JSON object with a boolean 'global'")
+    if mariadb["kind"] == "global_and_grant":
+        if set(compound) != {"global", "grant"} or not isinstance(compound["grant"], str):
+            _die("runtime fault: global_and_grant requires exactly one 'grant' privilege")
+        privileges = [compound["grant"]]
+    else:
+        privileges = compound.get("grants")
+        if (
+            set(compound) != {"global", "grants"}
+            or not isinstance(privileges, list)
+            or set(privileges) != {"INSERT", "UPDATE"}
+            or len(privileges) != 2
+        ):
+            _die("runtime fault: global_and_grants requires exactly INSERT and UPDATE")
+    for privilege in privileges:
+        if privilege not in _RUNTIME_GRANT_PRIVILEGES:
+            _die(
+                f"runtime fault: privilege {privilege!r} is not in the code-owned "
+                f"grant allowlist {sorted(_RUNTIME_GRANT_PRIVILEGES)}"
+            )
+    capabilities = (sub.manifest.get("capabilities") or {}).get("fault_injection", [])
+    missing = sorted(
+        set(_compound_capabilities(mariadb["kind"])) - set(capabilities)
+    )
+    if missing:
+        _die(f"runtime fault: substrate-blocked: missing fault-injection capabilities {missing}")
+
+
+def _compound_capabilities(kind: str) -> list[str]:
+    caps = [
+        "mariadb.runtime_global_variables",
+        "mariadb.runtime_grants",
+        "mariadb.runtime_compound",
+    ]
+    if kind == "global_and_grants":
+        caps.append("mariadb.runtime_multi_grant")
+    return caps
+
+
 def _runtime_fault_kind(spec: dict[str, Any]) -> str | None:
     values = (spec.get("fault") or {}).get("values") or {}
     mariadb = ((values.get("faultInit") or {}).get("mariadb") or {})
@@ -435,7 +495,10 @@ def _runtime_fault_kind(spec: dict[str, Any]) -> str | None:
 def required_fault_capabilities(spec: dict[str, Any]) -> list[str]:
     """Return capabilities a scenario must declare for its selected fault."""
     if spec.get("fault", {}).get("tier") == "runtime":
-        if _runtime_fault_kind(spec) == "grant_revocation":
+        kind = _runtime_fault_kind(spec)
+        if kind == "grant_revocation":
             return ["mariadb.runtime_grants"]
+        if kind in _COMPOUND_KINDS:
+            return _compound_capabilities(kind)
         return ["mariadb.runtime_global_variables"]
     return []

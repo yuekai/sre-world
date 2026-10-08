@@ -1,11 +1,11 @@
 """Frappe grading hooks — the substrate-owned capture/postprocess layer.
 
 The genuinely-Frappe part of grading (ported from the phase-stack's
-``verifier/oracle/frappe_assemble.py``, author Mbladra, shrunk to its real
-core): MariaDB lives in the vendored bitnami subchart and ships its config as
-an INI-format ``my.cnf`` ConfigMap, while the oracle's minimality differ
+``frappe_assemble.py``, author Mbladra, shrunk to its real core): MariaDB lives
+in the vendored bitnami subchart and ships its config as an INI-format
+``my.cnf`` ConfigMap, while the ``repair_scope`` materializer's config differ
 flattens only YAML — so this module parses the INI into a semantic
-``{"mariadb": {...}}`` dict and persists it as YAML, giving ``diff_keys()``
+``{"mariadb": {...}}`` dict and persists it as YAML, giving that differ
 first-class dotted keys (``mariadb.max_connections``) that match the
 ground-truth namespace 1:1.
 
@@ -16,9 +16,10 @@ Consumers (both load THIS file — single source, no drift):
   * substrates/frappe/loadgen_sidecar.py, in-pod (build.sh COPYs this file to
     /app/grader_hooks.py) → capture_sources/build_config_after/postprocess.
 
-Substrate-agnostic helpers stay in the shared ``verifier/oracle/assemble.py``
-(imported, never copied); ``oracle/evaluate.py`` is untouched — it grades an
-already-assembled rundir and never imports substrate code.
+Substrate-agnostic helpers stay in the shared
+``loadgen-common/evidence_collector.py`` (imported, never copied); the verifier
+is untouched — it grades an already-assembled rundir and never imports
+substrate code.
 """
 
 from __future__ import annotations
@@ -69,8 +70,8 @@ POD_NAME_TO_DOCKER_SERVICE = {
     "redis-queue": "svc-redis-queue",
 }
 
-# Relative path (under config_before/ and config_after/) at which the oracle's
-# minimality differ compares the SUT config. YAML on disk, INI in the ConfigMap
+# Relative path (under config_before/ and config_after/) at which the
+# repair_scope differ compares the SUT config. YAML on disk, INI in the ConfigMap
 # (see module docstring for why).
 CONFIG_RELPATH = Path("sut") / "config" / "mariadb.yaml"
 
@@ -119,6 +120,7 @@ MARIADB_PROBE_KINDS = frozenset(
         "innodb_lock_summary",
         "schema_fingerprint",
         "schema_privilege",
+        "site_account_grants",
         "table_count",
         "table_checksum",
     }
@@ -190,6 +192,11 @@ def mariadb_probe_specs(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "value_type",
                 "expect",
             },
+            "site_account_grants": {
+                "kind",
+                "database_selector",
+                "expect",
+            },
             "table_count": {
                 "kind",
                 "database",
@@ -253,18 +260,19 @@ def mariadb_probe_specs(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     f"frappe grader_hooks: MariaDB status probe {probe_id!r} "
                     "requires numeric value_type"
                 )
-        elif kind == "schema_privilege":
+        elif kind in {"schema_privilege", "site_account_grants"}:
+            if raw.get("database_selector") != "frappe_site":
+                raise RuntimeError(
+                    f"frappe grader_hooks: MariaDB probe {probe_id!r} requires "
+                    "database_selector frappe_site"
+                )
+        if kind == "schema_privilege":
             privilege = raw.get("privilege")
             if privilege not in MARIADB_SCHEMA_PRIVILEGES:
                 raise RuntimeError(
                     f"frappe grader_hooks: MariaDB probe {probe_id!r} privilege "
                     f"{privilege!r} is not allowlisted; "
                     f"supported={sorted(MARIADB_SCHEMA_PRIVILEGES)}"
-                )
-            if raw.get("database_selector") != "frappe_site":
-                raise RuntimeError(
-                    f"frappe grader_hooks: MariaDB probe {probe_id!r} requires "
-                    "database_selector frappe_site"
                 )
             if raw.get("value_type") != "boolean":
                 raise RuntimeError(
@@ -451,6 +459,27 @@ def mariadb_probe_query(
             "FROM information_schema.SCHEMA_PRIVILEGES "
             f"WHERE TABLE_SCHEMA = '{database}' AND PRIVILEGE_TYPE = '{privilege}' "
             "AND GRANTEE NOT LIKE \"'root'@%\";"
+        )
+    if kind == "site_account_grants":
+        return (
+            "WITH site_grantee AS ("
+            "SELECT GRANTEE FROM information_schema.SCHEMA_PRIVILEGES "
+            f"WHERE TABLE_SCHEMA = '{database}' AND PRIVILEGE_TYPE = 'SELECT' "
+            "AND GRANTEE NOT LIKE \"'root'@%\" ORDER BY GRANTEE LIMIT 1"
+            ") SELECT privilege_scope, object_name, privilege_type, is_grantable FROM ("
+            "SELECT 'GLOBAL' AS privilege_scope, '*' AS object_name, PRIVILEGE_TYPE AS privilege_type, "
+            "IS_GRANTABLE AS is_grantable, GRANTEE FROM information_schema.USER_PRIVILEGES UNION ALL "
+            "SELECT 'SCHEMA', CASE WHEN TABLE_SCHEMA = "
+            f"'{database}' THEN '<site>' ELSE TABLE_SCHEMA END, PRIVILEGE_TYPE, "
+            "IS_GRANTABLE, GRANTEE FROM information_schema.SCHEMA_PRIVILEGES UNION ALL "
+            "SELECT 'TABLE', CONCAT(CASE WHEN TABLE_SCHEMA = "
+            f"'{database}' THEN '<site>' ELSE TABLE_SCHEMA END, '.', TABLE_NAME), "
+            "PRIVILEGE_TYPE, IS_GRANTABLE, GRANTEE FROM information_schema.TABLE_PRIVILEGES UNION ALL "
+            "SELECT 'COLUMN', CONCAT(CASE WHEN TABLE_SCHEMA = "
+            f"'{database}' THEN '<site>' ELSE TABLE_SCHEMA END, '.', TABLE_NAME, '.', COLUMN_NAME), "
+            "PRIVILEGE_TYPE, IS_GRANTABLE, GRANTEE FROM information_schema.COLUMN_PRIVILEGES"
+            ") grant_rows WHERE GRANTEE = (SELECT GRANTEE FROM site_grantee) "
+            "ORDER BY privilege_scope, object_name, privilege_type, is_grantable LIMIT 4097;"
         )
     table = spec["table"]
     if kind == "table_count":

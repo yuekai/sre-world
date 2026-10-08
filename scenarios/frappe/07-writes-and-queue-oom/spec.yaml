@@ -165,12 +165,6 @@ difficulty:
           - -brpop
           persistence:
             enabled: true
-      worker:
-        default: {replicaCount: 0}
-        short: {replicaCount: 0}
-        long: {replicaCount: 1, supervise: true, resources: {requests: {cpu: 250m}, limits: {cpu: 1000m}}}
-        scheduler: {replicaCount: 0}
-      socketio: {replicaCount: 0}
       redis-cache:
         master:
           extraFlags:
@@ -178,3 +172,9 @@ difficulty:
           - 4mb
           - --maxmemory-policy
           - allkeys-lru
+      worker:
+        default: {replicaCount: 0}
+        short: {replicaCount: 0}
+        long: {replicaCount: 1, supervise: true, resources: {requests: {cpu: 250m}, limits: {cpu: 1000m}}}
+        scheduler: {replicaCount: 0}
+      socketio: {replicaCount: 0}

@@ -98,7 +98,7 @@ images:
   postgres: postgres:16
   redis: redis:7-alpine
   redpanda: redpandadata/redpanda:v24.2.7
-  minio: ghcr.io/abundant-ai/sre-world/slack-main@sha256:7910f6ae9706a6cc4a19f8e2c78c49e0f98c0ae4728aa4045fb33221b9e6d74a
+  minio: ghcr.io/yuekai/sre-world/slack-main@sha256:7910f6ae9706a6cc4a19f8e2c78c49e0f98c0ae4728aa4045fb33221b9e6d74a
   # (no searchEngine image: the search-engine deployment runs the custom Go binary on
   #  images.go — a stock search image here would be a dead/misleading config fingerprint)
   envoy: envoyproxy/envoy:v1.31-latest

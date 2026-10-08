@@ -12,10 +12,9 @@ profiles:
     - [17.0, 5.0, 30.0, 1.7]
     soak_cycles: 1
     declare_deadline_s: 170.0
-    # A verifier-authorized undeclared run needs one complete three-shape
-    # rotation, not the full agent declaration window. Long derived profiles
-    # inherit this floor while keeping their own declare_deadline_s.
-    undeclared_evidence_min_s: 170.0
+    # Legacy standalone schedule length: one complete three-shape rotation.
+    # D28 task resolution derives the deployed length from the task-level
+    # post-readiness episode budget and leaves no separate null-report floor.
     drivers: [browse, browse, browse, checkout_readback]
   saleor_eval:
     base: saleor_dev
@@ -30,6 +29,13 @@ profiles:
   saleor_async_eval:
     base: saleor_eval
     drivers: [browse, browse, browse, checkout_async]
+  # Legacy standalone long shape for 20-A2. D28 keeps readiness outside t0,
+  # includes Harbor setup in the task's 2400 s post-readiness episode budget,
+  # and derives the deployed pre-soak length on this cycle grid. The compatibility
+  # field is intentionally unpinned here so no second timing value can conflict.
+  saleor_async_eval_long:
+    base: saleor_async_dev
+    repeat_cycles: 24
   saleor_async_temporal_eval:
     base: saleor_async_eval
     soak_cycles: 8

@@ -28,9 +28,9 @@ profiles:
 
   # Commit-after-timeout reconstruction on the unified temporal-event plane.
   # The ordinary work stream remains healthy. A private substrate handler
-  # executes a deterministic post-commit timeout/retry cohort after a complete
-  # peak+trough, opens agent readiness only after recovery hysteresis, then
-  # executes a fresh declaration-relative cohort against the repaired invariant.
+  # executes a deterministic post-commit timeout/retry cohort on the pre-t0
+  # bringup timeline, opens Harbor readiness only after recovery hysteresis,
+  # then executes a declaration-relative cohort against the repaired invariant.
   commit_after_timeout_temporal:
     base: dev
     cycles: [[20.0, 50.0, 40.0, 10.0]]
@@ -41,7 +41,7 @@ profiles:
     events:
       - kind: commit_timeout_event
         event_id: initial-commit-timeout
-        anchor: episode
+        anchor: bringup
         required: true
         fire_at_s: 110.0
         duration_s: 0.0
@@ -99,10 +99,9 @@ profiles:
     warmup_s: 10.0
     cycles:
       - [10.0, 50.0, 10.0, 10.0]
-    # 10s warmup + three complete 20s cycles. A nop therefore grades in about
-    # 70s instead of waiting the former 630s declaration window.
+    # 10s warmup + three complete 20s cycles. The legacy standalone profile
+    # therefore reaches its pre-soak schedule end in about 70s.
     declare_deadline_s: 70.0
-    undeclared_evidence_min_s: 70.0
     soak_cycles: 2
     rate_jitter: 0.12
     baseline_rps: 8.0
@@ -110,7 +109,7 @@ profiles:
     events:
       - kind: message_event
         event_id: primary-poison
-        anchor: episode
+        anchor: bringup
         required: true
         fire_at_s: 18.0
         duration_s: 0.0
@@ -161,8 +160,8 @@ profiles:
         transient_failures: 2
         expected_terminal: success
 
-  # spec: the long-window reference schedule per CONTRACTS.md.
-  # 120 + 3*(90+150) = 840s of configured schedule -> declare_deadline 840.
+  # spec: the long reference schedule per CONTRACTS.md.
+  # 120 + 3*(90+150) = 840s of configured pre-soak schedule.
   spec:
     seed: 42
     warmup_s: 120.0
@@ -176,7 +175,7 @@ profiles:
 
   # demo: dev-scale load but MANY cycles (~11.5 min) so load stays present when a
   # real long-running agent declares (the D8 load-hold-until-declare concern).
-  # 30 + 11*(20+40) = 690s -> declare_deadline 690.
+  # 30 + 11*(20+40) = 690s of configured pre-soak schedule.
   demo:
     base: dev
     cycles: [[20.0, 50.0, 40.0, 10.0]]
@@ -184,12 +183,11 @@ profiles:
     soak_cycles: 1
     declare_deadline_s: 690.0
 
-  # eval25: dev-scale load, 25 cycles (~25.5 min) — the real-agent window whose
-  # 1530s declare_deadline EXCEEDS a 1500s agent budget, so a live agent is never
-  # null-pathed mid-investigation. soak_cycles=4: the graded window carries a
-  # verifier-side SETTLE allowance (thresholds.latency_settle_s) so at-declare
-  # recovery transients (e.g. 06-F2b VACUUM FREEZE) don't contaminate the bands.
-  # 30 + 25*(20+40) = 1530s -> declare_deadline 1530.
+  # eval25: legacy standalone dev-scale load, 25 cycles (~25.5 min).
+  # D28 task resolution derives the actual pre-soak length from the task's
+  # post-readiness episode budget. soak_cycles=4 retains enough standalone
+  # recovery traffic for latency-settle consumers.
+  # 30 + 25*(20+40) = 1530s of configured pre-soak schedule.
   eval25:
     base: dev
     cycles: [[20.0, 50.0, 40.0, 10.0]]
@@ -201,26 +199,25 @@ profiles:
   # (POST /messages -> POST /index passthrough -> GET /search readback) instead
   # of GET /work. soak_cycles=2 so a post-declare latency-settle window can drop
   # the at-declare pool-reload transient and still grade a full steady-state peak.
-  # declare_deadline 150 keeps a non-declaring nop inside the verifier poll budget.
+  # The compatibility-named 150s schedule end keeps standalone runs compact.
   write:
     base: dev
     soak_cycles: 2
     drivers: [write_readback]
 
   # Real PostgreSQL checkpoint collision reconstruction. The checkpoint
-  # controller and the write schedule share t0; the agent starts only after the
-  # first unsafe run completes. Cycle-aligned soak keeps the 35s fault / 55s
-  # repair offsets meaningful even when declaration occurs mid-cycle.
+  # controller runs on the pre-t0 bringup timeline; Harbor readiness opens only
+  # after the first unsafe run completes. Cycle-aligned soak keeps the 35s fault
+  # / 55s repair offsets meaningful even when declaration occurs mid-cycle.
   maintenance_collision_temporal:
     base: write
     loop: true
     declare_deadline_s: 150.0
-    undeclared_evidence_min_s: 150.0
     align_soak_to_cycle: true
     events:
       - kind: maintenance_epoch
         event_id: primary-maintenance-collision
-        anchor: episode
+        anchor: bringup
         required: true
         fire_at_s: 0.0
         duration_s: 0.0
@@ -293,7 +290,7 @@ profiles:
   # blip on svc-workspace AUTO-REVERTS after 5s; with the aggressive mesh retry
   # policy armed, the retry storm it ignites LATCHES after the blip clears —
   # "revert the trigger" is a no-op and the agent must break the loop.
-  # soak_cycles=3 so the post-declare window confirms the fix is durable.
+  # soak_cycles=3 so the post-report soak confirms the fix is durable.
   write_retry_storm:
     base: write
     soak_cycles: 3
@@ -302,12 +299,10 @@ profiles:
          event_name: org_policy_revalidate, target_service: svc-workspace,
          auto_revert: true}
 
-  # write_retry_storm25: EVAL-SCALE 07-M2 sibling. Declared agents retain the
-  # full 1530s investigation window; a verifier-authorized null run finalizes
-  # after the same complete 150s evidence window used for calibration.
+  # write_retry_storm25: legacy standalone EVAL-SCALE 07-M2 sibling. D28 tasks
+  # derive one pre-soak schedule for both reported and null-report endings.
   write_retry_storm25:
     base: eval25
-    undeclared_evidence_min_s: 150.0
     drivers: [write_readback]
     events:
       - {kind: admin_event, fire_at_s: 40.0, duration_s: 5.0,
@@ -340,8 +335,8 @@ profiles:
       - {kind: admin_event, fire_at_s: 40.0, duration_s: 0.0,
          event_name: store_consistency_strict, target_service: svc-notification}
 
-  # write25: eval-scale WRITE profile — RESERVED (no committed scenario; a
-  # non-declaring nop would outlast the verifier poll budget; see schedule notes).
+  # write25: legacy standalone eval-scale WRITE profile — RESERVED (no committed
+  # scenario; D28 task resolution would derive its length before deployment).
   write25:
     base: eval25
     drivers: [write_readback]
@@ -358,7 +353,6 @@ profiles:
   # differential-diagnosis sibling of 03-W1's `write`.
   write_eval:
     base: eval25
-    undeclared_evidence_min_s: 150.0
     drivers: [write_readback]
 
   auth_key_split_history:
@@ -367,8 +361,8 @@ profiles:
     warmup_rps: 30
     cycles: [[20, 40, 20, 10]]
     soak_cycles: 2
-    # Calibration actors are bounded to a ten-minute episode: nop reaches this
-    # deadline, while oracle declares after the history gate and finishes sooner.
+    # Standalone calibration actors use a ten-minute pre-soak schedule; the
+    # reference actor may report after the history gate and finish sooner.
     declare_deadline_s: 600
     loop: true
     drivers: [signed_auth_write]
@@ -395,7 +389,6 @@ profiles:
     cycles: [[30.0, 90.0, 30.0, 25.0]]
     loop: true
     declare_deadline_s: 870.0
-    undeclared_evidence_min_s: 870.0
     soak_cycles: 2
     n_sessions: 256
     channel_pool_k: 8

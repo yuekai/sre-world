@@ -283,6 +283,12 @@ def collect_runtime_snapshot() -> dict[str, Any]:
     return {"postgres": postgres}
 
 
+# Readiness markers and evidence tables created by fault-init and task charts.
+# Setup grants on these race the sidecar's boot capture, so they must never
+# reach the minimality diff.
+SCAFFOLDING_RELATION_PREFIX = "sre_world_"
+
+
 def _collect_catalog_state(conn: Any) -> dict[str, Any]:
     """Non-GUC catalog state that ALTER ROLE / GRANT / REVOKE mutate.
 
@@ -340,6 +346,16 @@ def _collect_catalog_state(conn: Any) -> dict[str, Any]:
     # Table/sequence/view privileges: explicit ACL entries in the public
     # schema (relacl IS NULL = owner-default = no keys; only explicitly
     # granted/revoked relations carry entries, so this stays bounded).
+    #
+    # `sre_world_%` relations are harness scaffolding -- the readiness markers
+    # and evidence tables that fault-init and the task chart create and grant
+    # during setup. They are NOT part of the graded application surface and no
+    # legitimate repair touches them, but their grants raced the boot capture:
+    # setup that finished after the sidecar snapshotted config_at_boot.json
+    # left every scaffolding grant looking like a solver mutation. That made
+    # repair-scope `set_equals` a coin flip -- an identical Oracle run scored
+    # PASS with 1 changed key and FAIL with 23 on the very next trial. Exclude
+    # them here so boot and declare captures agree regardless of setup timing.
     grants = conn.execute(
         "SELECT c.relname, coalesce(g.rolname, 'public'), lower(a.privilege_type) "
         "FROM pg_class c "
@@ -347,10 +363,15 @@ def _collect_catalog_state(conn: Any) -> dict[str, Any]:
         "LEFT JOIN pg_authid g ON g.oid = a.grantee "
         "WHERE c.relnamespace = 'public'::regnamespace "
         "AND c.relacl IS NOT NULL AND c.relkind IN ('r', 'p', 'v', 'm', 'S') "
+        "AND c.relname NOT LIKE 'sre\\_world\\_%' "
         "AND (g.rolname IS NULL OR g.rolname NOT LIKE 'pg\\_%') "
         "ORDER BY 2, 1, 3"
     ).fetchall()
     for relname, grantee, priv in grants:
+        # The SQL above already excludes scaffolding; this guard keeps the
+        # invariant enforceable in a unit test and survives edits to the query.
+        if str(relname).startswith(SCAFFOLDING_RELATION_PREFIX):
+            continue
         out[f"grant.{grantee}.{relname}.{priv}"] = True
     # Per-database connection limits (ALTER DATABASE ... CONNECTION LIMIT).
     dbs = conn.execute(

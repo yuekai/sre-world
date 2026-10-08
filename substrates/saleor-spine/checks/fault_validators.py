@@ -609,7 +609,13 @@ def validate_runtime_tier(spec: dict[str, Any], sub: Any) -> None:
     del sub
     flat = _flatten(_extract_fault_values(spec))
     _validate_scenery(flat)
-    pg_keys = {"faultInit.postgres.enabled", "faultInit.postgres.statements"}
+    # readyMarker: after the statements apply, fault-init records a marker row
+    # (sre_world_fault_ready) that the answer key's boot gate waits for.
+    pg_keys = {
+        "faultInit.postgres.enabled",
+        "faultInit.postgres.statements",
+        "faultInit.postgres.readyMarker",
+    }
     app_keys = {"faultInit.saleorApp.enabled", "faultInit.saleorApp.appName"}
     allowed_extra = (pg_keys | app_keys
                      | set(_RUNTIME_COTOGGLE_KEYS) | set(_RUNTIME_LOAD_KEYS)
@@ -634,6 +640,8 @@ def validate_runtime_tier(spec: dict[str, Any], sub: Any) -> None:
     if profiles_yaml not in (None, ""):
         _validate_layer_profiles_yaml(profiles_yaml)
 
+    if flat.get("faultInit.postgres.readyMarker", True) is not True:
+        _die("faultInit.postgres.readyMarker may only be set to true.")
     pg_on = flat.get("faultInit.postgres.enabled") is True
     app_on = flat.get("faultInit.saleorApp.enabled") is True
     if sum((pg_on, app_on)) != 1:

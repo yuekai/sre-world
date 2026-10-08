@@ -14,6 +14,7 @@ Three guarantees:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections import Counter
@@ -146,6 +147,73 @@ def test_loop_soak_stream_is_independent_and_deterministic() -> None:
     assert soak_a[0][0] >= 0.0
     assert max(t for t, _ in soak_a) < profile.soak_duration_s()
     assert profile.soak_duration_s() == 60.0
+
+
+@pytest.mark.parametrize("recovery_pass", [True, False])
+@pytest.mark.asyncio
+async def test_bounded_recovery_rebases_unchanged_soak_after_pre_soak_drain(
+    tmp_path, recovery_pass: bool,
+) -> None:
+    from loadgen.runner import LoadGen
+
+    profile = _loop_dev()
+    events: list[str] = []
+    soak_arrivals: list[tuple[float, str]] = []
+    rebase: tuple[float, float] | None = None
+
+    async def recover(_session):
+        events.append("recover")
+        await asyncio.sleep(0)
+        return {
+            "pass": recovery_pass,
+            "accepted": 2,
+            "verified_completed": 2 if recovery_pass else 0,
+            "remaining": 0 if recovery_pass else 2,
+        }
+
+    loadgen = LoadGen(
+        profile,
+        tmp_path / "loadgen.jsonl",
+        pre_soak_recovery_hook=recover,
+        allow_failed_pre_soak_recovery=not recovery_pass,
+    )
+    loadgen._t0 = asyncio.get_running_loop().time()
+
+    async def fire_window(arrivals, rebase_from):
+        nonlocal rebase
+        if rebase_from is None:
+            events.append("pre_soak")
+            loadgen.soak_start_s = 1.0
+            return
+        events.append("soak")
+        rebase = rebase_from
+        soak_arrivals.extend(arrivals)
+
+    async def finish_boundary():
+        events.append("boundary")
+
+    drain_calls = 0
+
+    async def drain():
+        nonlocal drain_calls
+        drain_calls += 1
+        events.append("drain")
+
+    async def duration_floor():
+        events.append("duration_floor")
+
+    loadgen._fire_window = fire_window
+    loadgen._finish_pre_soak_boundary = finish_boundary
+    loadgen._drain = drain
+    loadgen._hold_soak_duration_floor = duration_floor
+
+    await loadgen.run()
+
+    assert events[:5] == ["pre_soak", "boundary", "drain", "recover", "soak"]
+    assert drain_calls == 2  # recovery census, then ordinary end-of-soak drain
+    assert soak_arrivals == list(iter_soak_arrivals(profile))
+    assert rebase is not None and rebase[0] == 0.0 and rebase[1] >= 1.0
+    assert loadgen.pre_soak_recovery_receipt["pass"] is recovery_pass
 
 
 def test_loop_requires_deadline_past_warmup() -> None:

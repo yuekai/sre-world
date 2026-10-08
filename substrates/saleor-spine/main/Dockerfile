@@ -61,8 +61,10 @@ RUN set -eux; \
 # and a fail-loud readiness probe.  The latter persists the exact JSON startup
 # error under /logs/artifacts when Harbor exhausts healthcheck retries.
 COPY submit_incident_report /usr/local/bin/submit_incident_report
+COPY declare_repair_complete /usr/local/bin/declare_repair_complete
 COPY check_episode_ready /usr/local/bin/check_episode_ready
-RUN chmod +x /usr/local/bin/submit_incident_report /usr/local/bin/check_episode_ready
+RUN chmod +x /usr/local/bin/submit_incident_report /usr/local/bin/declare_repair_complete /usr/local/bin/check_episode_ready \
+    && bash -n /usr/local/bin/declare_repair_complete
 
 # Agent-freezer (#91 terminal-declaration boundary): runs as a sidecar in the
 # main pod; on declare the loadgen calls it to SIGKILL the agent's uid-10001

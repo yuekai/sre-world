@@ -350,6 +350,9 @@ def recover_spec(
                 if metadata.get(key) != value:
                     metadata[key] = value
             task = doc["task"]
+            scenario_key = metadata if "scenario" in metadata else task
+            if scenario_key.get("scenario") != task_toml["metadata"]["scenario"]:
+                scenario_key["scenario"] = task_toml["metadata"]["scenario"]
             if task["name"] != task_toml["task"]["name"]:
                 task["name"] = task_toml["task"]["name"]
             if " ".join(str(task["description"]).split()) != task_toml["task"]["description"]:

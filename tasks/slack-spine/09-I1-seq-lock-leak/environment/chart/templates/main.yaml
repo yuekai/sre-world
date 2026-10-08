@@ -76,9 +76,9 @@ spec:
       # the agent. This one-shot init owns only the writable emptyDirs instead.
       initContainers:
         {{- if .Values.platformTools.enabled }}
-        {{- $toolsImage := printf "ghcr.io/abundant-ai/sre-world/codex-tools@%s" .Values.platformTools.digest }}
+        {{- $toolsImage := printf "ghcr.io/yuekai/sre-world/codex-tools@%s" .Values.platformTools.digest }}
         {{- if and (ne .Values.global.imagePullPolicy "Never") (ne $toolsImage .Values.platformTools.image) }}
-        {{- fail "hosted platformTools.image must exactly equal the locked ghcr.io/abundant-ai/sre-world/codex-tools@digest identity" }}
+        {{- fail "hosted platformTools.image must exactly equal the locked ghcr.io/yuekai/sre-world/codex-tools@digest identity" }}
         {{- end }}
         - name: codex-tools
           image: {{ required "platformTools.image is required" .Values.platformTools.image | quote }}

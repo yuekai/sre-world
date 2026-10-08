@@ -36,7 +36,7 @@ chart:
   path: chart
 
 images:
-  registry: ghcr.io/abundant-ai/sre-world
+  registry: ghcr.io/yuekai/sre-world
   # Replaced by the trusted release-candidate workflow before task generation.
   release: rc-saleor-spine-v9-d2cd71f7f59b
   custom:

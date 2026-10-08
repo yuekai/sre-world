@@ -37,7 +37,7 @@ from tools.report_judge import (
 )
 from tools.validate_trial_capture import validate as validate_trial_capture
 from verifier.contract import load_contract
-from verifier.errors import VerifierV2Error
+from verifier.errors import VerifierError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STANDARD_CASES = (
@@ -367,7 +367,7 @@ def _qualify_case_report(
             judge_required=contract.report_assessment["judge_required"],
             provider=provider,
         )
-    except (OSError, yaml.YAMLError, VerifierV2Error) as exc:
+    except (OSError, yaml.YAMLError, VerifierError) as exc:
         _die(f"advisory report qualification failed: {exc}")
     if contract.report_assessment["judge_required"]:
         if assessment.get("status") != "COMPLETE":
