@@ -18,8 +18,11 @@ the offline `abundant-ai/sre-world`; see [README § About this mirror](README.md
 | `tools/arena_parity.py` | Gate: regenerated tasks must equal the Incident Arena tasks | [docs/plans/2026-10-07-arena-parity.md](docs/plans/2026-10-07-arena-parity.md) |
 | `tools/arena_backport.py` | Recovers scenario sources from Arena task outputs | same plan |
 | `ci_checks/` | Advisory LLM task-quality rubric | [ci_checks/README.md](ci_checks/README.md) |
-| `docs/DECISIONS.md` | Why things are the way they are (design log, D1–D25) | — |
+| `docs/DECISIONS.md` | Why things are the way they are (design log, ascending; D17 unassigned) | — |
 | `docs/plans/` | Execution plans and the tech-debt list | [docs/plans/README.md](docs/plans/README.md) |
+
+Tasks are often named by Incident Arena number ("task 007"); the table in
+[README § Scenario catalog](README.md#scenario-catalog) maps each number to its `tasks/` path.
 
 ## Commands
 

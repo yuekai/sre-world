@@ -215,6 +215,45 @@ def _print_diff(arena_task: Path, ours: Path, rel: str, limit: int) -> None:
         print(f"      … {len(lines) - limit} more diff lines")
 
 
+README = REPO_ROOT / "README.md"
+_CATALOG_ROW = re.compile(r"^\| (\d{3}|—) \| `tasks/[a-z0-9-]+/[^`]+` \|$", re.MULTILINE)
+
+
+def arena_catalog(arena_root: Path) -> list[str]:
+    """README catalog rows mapping each Arena task number to its committed task.
+
+    People name tasks by Arena number ("task 007"); this table is the only place
+    that number meets the repo's scenario ids.
+    """
+    rows = []
+    for task_dir in sorted(p for p in (arena_root / "tasks").iterdir() if p.is_dir()):
+        m = _ARENA_NAME.match(task_dir.name)
+        resolved = resolve_task(task_dir.name)
+        if not m or resolved is None:
+            continue
+        substrate, scenario = resolved
+        rows.append(f"| {m['num'] or '—'} | `tasks/{substrate}/{scenario}` |")
+    return sorted(rows, key=lambda row: (row.startswith("| —"), row))
+
+
+def check_catalog(arena_root: Path) -> bool:
+    expected = arena_catalog(arena_root)
+    observed = [
+        line for line in README.read_text(encoding="utf-8").splitlines()
+        if _CATALOG_ROW.match(line)
+    ]
+    if observed == expected:
+        print(f"  ✓ README Arena catalog lists all {len(expected)} task(s)")
+        return True
+    print(
+        "  ✗ README Arena catalog is out of date. Replace the table rows under "
+        "'## Scenario catalog' with:"
+    )
+    for row in expected:
+        print(f"    {row}")
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--arena", type=Path, required=True, help="incident-arena checkout")
@@ -258,9 +297,10 @@ def main(argv: list[str] | None = None) -> int:
                 if args.diff and label == "changed":
                     _print_diff(args.arena / "tasks" / r.arena_name, r.ours, rel, args.diff_lines)
 
+    catalog_ok = args.task or check_catalog(args.arena)
     total = len(entries)
     print(f"arena_parity: {total - failed}/{total} task(s) match")
-    return 1 if failed else 0
+    return 1 if failed or not catalog_ok else 0
 
 
 if __name__ == "__main__":

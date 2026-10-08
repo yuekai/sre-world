@@ -23,6 +23,27 @@ DOCS = [
 ]
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
 _STATUS = re.compile(r"^Status: (active|completed|abandoned)$")
+# Instructions an agent follows verbatim (commands, "edit X"); historical docs
+# under docs/ may name retired paths on purpose.
+LIVE_DOCS = [
+    REPO / "AGENTS.md",
+    REPO / "README.md",
+    REPO / "QUICKSTART.md",
+    REPO / "CONTRIBUTING.md",
+    REPO / "verifier" / "README.md",
+]
+_REPO_PATH = re.compile(
+    r"(?<![\w./<>-])((?:substrates|scenarios|tasks|verifier|tools|loadgen-common"
+    r"|docs|ci_checks)/[^\s`'\")\]|,;]*)"
+)
+_PLACEHOLDER = re.compile(r"[<>*{}$]")
+# Paths a live doc names as history, not as something to use.
+_HISTORICAL_PATHS = {
+    ("verifier/README.md", "tools/verifier_v2/"): "records where verifier/ moved from",
+}
+_DECISION = re.compile(r"^## D(\d+) ", re.MULTILINE)
+_UNASSIGNED_DECISIONS = {17}  # skipped by the original; see docs/DECISIONS.md
+_EVIDENCE = re.compile(r"^  Evidence: (reproduced|observed|inferred) \(.+\)\.$", re.MULTILINE)
 
 
 def _local_targets(md: Path) -> list[str]:
@@ -44,6 +65,41 @@ def test_relative_links_resolve(md: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("md", LIVE_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+def test_live_doc_repo_paths_exist(md: Path) -> None:
+    rel = str(md.relative_to(REPO))
+    missing = sorted(
+        {
+            path
+            for path in (
+                raw.rstrip(".:") for raw in _REPO_PATH.findall(md.read_text(encoding="utf-8"))
+            )
+            if not _PLACEHOLDER.search(path)
+            and (rel, path) not in _HISTORICAL_PATHS
+            and not (REPO / path.rstrip("/")).exists()
+        }
+    )
+    assert not missing, (
+        f"{rel} names repo paths that do not exist: {missing}. Point it at the "
+        "current path (tasks/ and scenarios/ ids carry a numeric prefix, e.g. "
+        "tasks/slack-spine/00-BASE-health), or, if the doc names it as history, "
+        "add it to _HISTORICAL_PATHS in tools/test_doc_links.py with the reason."
+    )
+
+
+def test_decisions_are_numbered_in_order() -> None:
+    numbers = [
+        int(n)
+        for n in _DECISION.findall((REPO / "docs" / "DECISIONS.md").read_text(encoding="utf-8"))
+    ]
+    expected = [n for n in range(1, max(numbers) + 1) if n not in _UNASSIGNED_DECISIONS]
+    assert numbers == expected, (
+        f"docs/DECISIONS.md entries run {numbers}; expected {expected}. Keep entries "
+        "in ascending order and give a new decision the next number (AGENTS.md "
+        "Rules: Decisions)."
+    )
+
+
 def test_agents_map_paths_exist() -> None:
     text = (REPO / "AGENTS.md").read_text(encoding="utf-8")
     rows = [line for line in text.splitlines() if line.startswith("| `")]
@@ -56,6 +112,22 @@ def test_agents_map_paths_exist() -> None:
     assert not missing, (
         f"AGENTS.md map names paths that do not exist: {missing}. Update the map "
         "row when you move or delete what it points at."
+    )
+
+
+def test_tech_debt_entries_state_their_evidence() -> None:
+    text = (REPO / "docs" / "plans" / "tech-debt.md").read_text(encoding="utf-8")
+    entries = re.split(r"(?m)^- ", text)[1:]
+    untagged = [
+        re.match(r"\*\*(.+?)\*\*", entry).group(1) if entry.startswith("**") else entry[:40]
+        for entry in entries
+        if not _EVIDENCE.search(entry)
+    ]
+    assert entries, "docs/plans/tech-debt.md has no entries; is the list format intact?"
+    assert not untagged, (
+        f"tech-debt entries without an evidence tag: {untagged}. End each with "
+        "'Evidence: reproduced|observed|inferred (<how>, <date>).' and use "
+        "'inferred' for anything you did not check (docs/plans/tech-debt.md)."
     )
 
 

@@ -120,14 +120,34 @@ knob, and `psql` from the foothold.
 
 ## Scenario catalog
 
-The generated set is the 20 Incident Arena tasks plus the two base-health capture
-harnesses:
+The generated set is the 20 Incident Arena tasks, listed by the Arena number people
+use to name them ("task 007"), plus the two base-health capture harnesses
+(`tasks/frappe/00-BASE-health`, `tasks/slack-spine/00-BASE-health`). The Arena
+skipped 005 and published one Frappe task without a number. `./validate.sh arena`
+checks this table against the Arena checkout.
 
-| substrate | scenarios |
+| Arena | task |
 |---|---|
-| `frappe` | `07-deletes-and-jobs-fail`, `07-desk-and-queue-oom`, `07-desk-and-queue-outage`, `07-new-records-and-jobs-fail`, `07-new-records-and-queue-oom`, `07-writes-and-queue-oom` |
-| `saleor-spine` | `10-T1-statement-timeout-canary` |
-| `slack-spine` | `06-F3-split-sequencer`, `06-F4-maintenance-collision`, `06-logins-unread-and-sends-all-slow-since-noon`, `06-logins-unread-sends-slower`, `06-sends-crawl-then-store-slows`, `06-sends-fail-after-strict-mode-plausible-pool`, `06-sends-fail-after-strict-mode-turns-on`, `06-sends-fail-during-compliance-window`, `06-sends-fail-strict-pool-16`, `06-sends-slow-and-stall-every-minute`, `06-stall-every-minute-and-later-every-send-crawls`, `09-I1-seq-lock-leak`, `13-P1-distractor-volume-shell` |
+| 000 | `tasks/frappe/07-deletes-and-jobs-fail` |
+| 001 | `tasks/frappe/07-desk-and-queue-oom` |
+| 002 | `tasks/frappe/07-desk-and-queue-outage` |
+| 003 | `tasks/frappe/07-new-records-and-jobs-fail` |
+| 004 | `tasks/frappe/07-new-records-and-queue-oom` |
+| 006 | `tasks/saleor-spine/10-T1-statement-timeout-canary` |
+| 007 | `tasks/slack-spine/06-F3-split-sequencer` |
+| 008 | `tasks/slack-spine/06-F4-maintenance-collision` |
+| 009 | `tasks/slack-spine/06-logins-unread-and-sends-all-slow-since-noon` |
+| 010 | `tasks/slack-spine/06-logins-unread-sends-slower` |
+| 011 | `tasks/slack-spine/06-sends-crawl-then-store-slows` |
+| 012 | `tasks/slack-spine/06-sends-fail-after-strict-mode-plausible-pool` |
+| 013 | `tasks/slack-spine/06-sends-fail-after-strict-mode-turns-on` |
+| 014 | `tasks/slack-spine/06-sends-fail-during-compliance-window` |
+| 015 | `tasks/slack-spine/06-sends-fail-strict-pool-16` |
+| 016 | `tasks/slack-spine/06-sends-slow-and-stall-every-minute` |
+| 017 | `tasks/slack-spine/06-stall-every-minute-and-later-every-send-crawls` |
+| 018 | `tasks/slack-spine/09-I1-seq-lock-leak` |
+| 019 | `tasks/slack-spine/13-P1-distractor-volume-shell` |
+| — | `tasks/frappe/07-writes-and-queue-oom` |
 
 Two authored scenarios are not generated: build-capable `11-BC1-seq-lock-leak-build`
 (publication pending) and `10-SV1-pool-exhaustion-shell` (non-hosted).
@@ -201,7 +221,7 @@ turns a forgotten build into a loud failure instead of a silent stale pull.
 ```bash
 cp .env.example .env          # set ANTHROPIC_API_KEY (read by the agent only — the grading is API-free)
 substrates/slack-spine/build.sh            # build the current branch's :dev images
-uv run python -m tools.local_run --task tasks/slack-spine/seq-lock-leak \
+uv run python -m tools.local_run --task tasks/slack-spine/09-I1-seq-lock-leak \
   --agent claude-code --job-name dev-run --out jobs
 ```
 

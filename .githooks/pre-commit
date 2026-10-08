@@ -15,13 +15,18 @@ if grep -qE '^(substrates|scenarios|tools|verifier|loadgen-common|tasks)/' <<<"$
     fail=1
   fi
   rm -f /tmp/sre-world-gencheck.$$
-  if [ -d .cache/incident-arena/.git ] || [ -n "${ARENA_DIR:-}" ]; then
-    if ! uv run --frozen python -m tools.arena_parity --arena "${ARENA_DIR:-.cache/incident-arena}" | tail -1 | grep -q ' 20/20 '; then
-      echo "pre-commit: Incident Arena parity regressed. Run: ./validate.sh arena; fix the source" \
-           "or justify the difference in ALLOWED_DIFFERENCES (tools/arena_parity.py)." >&2
-      fail=1
-    fi
+fi
+
+# README.md carries the Arena-number catalog the parity gate checks.
+if grep -qE '^((substrates|scenarios|tools|verifier|loadgen-common|tasks)/|README\.md$)' <<<"$staged" \
+   && { [ -d .cache/incident-arena/.git ] || [ -n "${ARENA_DIR:-}" ]; }; then
+  if ! uv run --frozen python -m tools.arena_parity --arena "${ARENA_DIR:-.cache/incident-arena}" >/tmp/sre-world-arena.$$ 2>&1; then
+    grep -E '✗|^    ' /tmp/sre-world-arena.$$ | head -30
+    echo "pre-commit: Incident Arena parity or the README catalog regressed. Run: ./validate.sh arena;" \
+         "fix the source or catalog, or justify the difference in ALLOWED_DIFFERENCES (tools/arena_parity.py)." >&2
+    fail=1
   fi
+  rm -f /tmp/sre-world-arena.$$
 fi
 
 if grep -qE '\.md$' <<<"$staged"; then

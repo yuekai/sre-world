@@ -152,7 +152,7 @@ script from the current checkout.
 
 ```bash
 uv run python -m tools.local_run \
-  --task tasks/slack-spine/base-health \
+  --task tasks/slack-spine/00-BASE-health \
   --agent oracle \
   --job-name quickstart-oracle \
   --out jobs \
@@ -173,7 +173,7 @@ uv sync --group dev
 
 ```bash
 uv run python -m tools.local_run \
-  --task tasks/slack-spine/base-health \
+  --task tasks/slack-spine/00-BASE-health \
   --agent oracle \
   --job-name quickstart-oracle \
   --out jobs
