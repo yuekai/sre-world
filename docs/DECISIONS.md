@@ -266,6 +266,21 @@ flips `provisional: false` from the same bytes, spending no new trials (#266, #2
 - `hosted_ready` stays a separate promotion gate (a current qualification lock,
   #222); calibration provenance alone must never flip it.
 
+## D25 (2026-10-07) — Reconstruction: Incident Arena output is the reference
+**Decision:** The original repository went offline; its last generated output (the
+20 Incident Arena tasks, `abundant-ai/incident-arena@fba011e`) is the reference this
+fork must reproduce. `./validate.sh arena` (tools/arena_parity.py) checks every
+regenerated Arena task byte-for-byte, with each tolerated difference listed and
+justified in `ALLOWED_DIFFERENCES`. The v2 verifier lives at `verifier/` (the
+recovered `closure.py` names that root) and ships as `tests/verifier/`; completion is
+the declaration (`declare_repair_complete`), the report is advisory; load profiles of
+window-anchored tasks are derived from `task.metadata.agent_window_s`/`soak_s`.
+**Why:** with the source history gone after 2026-09-19, generated outputs and the
+published images are the only primary evidence; a byte-level gate turns
+"reconstructed" into a checkable claim instead of a judgment call.
+**Obligations:** keep the gate green; record unrecoverable pieces in
+`docs/plans/tech-debt.md`; see `docs/plans/2026-10-07-arena-parity.md`.
+
 ## D13 (2026-06-08) — Consolidate to a single self-contained Harbor task
 > Superseded by D14: `pool-exhaustion-cyclical` was deleted; the repo is now one `substrates/<name>/` + per-fault generated `tasks/<name>/<id>` (authored from `scenarios/<name>/<id>`), and `validate.sh` targets are now lint/contracts/stamp/render/harbor (observe/adversarial/calibrate retired). D13's single-source-of-truth-per-task lesson carries into the stamped-task model.
 

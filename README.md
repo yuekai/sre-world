@@ -16,12 +16,31 @@ artifacts that prove the setup works. [`CONTRIBUTING.md`](CONTRIBUTING.md) cover
 authoring lifecycle, and [`docs/DECISIONS.md`](docs/DECISIONS.md) records the design
 decisions behind the model.
 
-> **Frappe is not currently operational.** Its committed task is retained for
-> development, but hosted trials fail during Helm startup and its contracts, host
-> verifier, and Harbor gate are incomplete. Do not use Frappe for evaluation,
-> calibration evidence, merge-readiness claims, or demonstrations. Use `slack-spine`
-> for working runs, and consult [`tasks/INDEX.json`](tasks/INDEX.json) for current
-> readiness state.
+## About this mirror
+
+The original `abundant-ai/sre-world` repository went offline in October 2026. This
+fork reconstructs it to the state that produced the 20 tasks published in
+[Incident Arena](https://github.com/abundant-ai/incident-arena) (`fba011e`, synced
+2026-09-30):
+
+| What | Source | Confidence |
+|---|---|---|
+| History through 2026-09-19 (`28d44ce`, PR #488) | public fork `mrshu/sre-world`, fast-forwarded | Verified: no fork-owner commits, GitHub-signed merges, Arena answer-key SHAs in history |
+| Verifier, chart edits, generator output format, answer keys, prompts and solutions after Sep 19 | reverse-engineered from the Arena tasks (`tools/arena_backport.py`) | `tools/arena_parity.py` reproduces all 20 tasks byte-for-byte, up to its documented allowlist |
+| Loadgen, sidecar and `main` script changes after Sep 19 | source layers of the original's published images | Copied verbatim; where images disagree the newest wins |
+| Go services | unchanged since Sep 19 | Rebuilding `substrates/slack-spine/go` reproduces the v21 `slack-go` binaries byte-for-byte |
+| Images | re-hosted under `ghcr.io/yuekai/sre-world` with identical digests | Lock files pin the digests the Arena tasks use |
+
+Known gaps: the original's tests for post-Sep-19 behaviour, its CI/release
+workflows' later changes, and the full base-health recaptures behind three Slack
+health records (only the gating bands survive; see the record headers). 35 scenarios
+still on the Sep 19 grading contract were retired (`9acb124`; recoverable from history).
+
+Check parity against an Incident Arena checkout with:
+
+```bash
+uv run python -m tools.arena_parity --arena ../incident-arena
+```
 
 ## Architecture
 
@@ -101,18 +120,17 @@ knob, and `psql` from the foothold.
 
 ## Scenario catalog
 
-| id | tier | fault | difficulty axis | state |
-|---|---|---|---|---|
-| `split-sequencer` | config | silent per-channel duplicate-seq corruption; dual config+data fix; `seq_integrity` | distance 3+ | ✅ live: oracle PASS / nop & both half-fixes FAIL; bands provisional |
-| `maintenance-collision` | config | recurring PostgreSQL maintenance overlaps cyclical write peaks; durable schedule repair with data and recurrence checks | distance 2, temporal | ✅ exact-head calibration passed; final Oddish qualification pending |
-| `seq-lock-leak` | image | leaked `channel_seq` row lock (idle-in-txn backend) masquerading as pool exhaustion; confined operator shell; repaired operationally (`pg_terminate_backend`); `lock_state` correctness gate | distance 3 | ⚠️ one local golden/nop fence passed before the image-layer migration; current bands and provenance are provisional |
-| `distractor-volume-shell` | image | seed-derived `channel_seq` row lock behind high-volume production texture; source-free, shell-visible ([DESIGN](scenarios/slack-spine/13-P1-distractor-volume-shell/DESIGN.md)) | distance 5, temporal | ✅ calibrated (provisional: false); awaiting current-base hosted provenance |
-| `frappe/mariadb-connection-cap` | config | Frappe substrate: MariaDB `max_connections` cap starves aggregate worker demand | distance 3 | ✅ calibrated (provisional: false); `hosted_ready: false` pending the base-health migration, like every task on both substrates |
+The generated set is the 20 Incident Arena tasks plus the two base-health capture
+harnesses:
 
-This table is a curated view of the 5 generated tasks (4 `slack-spine` + 1 `frappe`;
-the two base-health canaries are omitted). Two authored scenarios are not in the generated set:
-build-capable `seq-lock-leak-build` is publication-pending until its image layer is
-published, and `pool-exhaustion-shell` is listed as `non_hosted` in the index.
+| substrate | scenarios |
+|---|---|
+| `frappe` | `07-deletes-and-jobs-fail`, `07-desk-and-queue-oom`, `07-desk-and-queue-outage`, `07-new-records-and-jobs-fail`, `07-new-records-and-queue-oom`, `07-writes-and-queue-oom` |
+| `saleor-spine` | `10-T1-statement-timeout-canary` |
+| `slack-spine` | `06-F3-split-sequencer`, `06-F4-maintenance-collision`, `06-logins-unread-and-sends-all-slow-since-noon`, `06-logins-unread-sends-slower`, `06-sends-crawl-then-store-slows`, `06-sends-fail-after-strict-mode-plausible-pool`, `06-sends-fail-after-strict-mode-turns-on`, `06-sends-fail-during-compliance-window`, `06-sends-fail-strict-pool-16`, `06-sends-slow-and-stall-every-minute`, `06-stall-every-minute-and-later-every-send-crawls`, `09-I1-seq-lock-leak`, `13-P1-distractor-volume-shell` |
+
+Two authored scenarios are not generated: build-capable `11-BC1-seq-lock-leak-build`
+(publication pending) and `10-SV1-pool-exhaustion-shell` (non-hosted).
 
 **[`tasks/INDEX.json`](tasks/INDEX.json) is the only live readiness authority.** It carries
 per-task `provisional` / `eval_ready` / `hosted_ready`, sizing, and image refs, and is
@@ -213,7 +231,7 @@ Oddish authenticates with `ODDISH_API_KEY` and schedules the provider-side Harbo
 callers do not need a Daytona provider key. Daytona sizing (8 cpu / 16 GB / 40 GB, which
 sizes the sandbox the whole ~40-pod system runs in) and the registry overlay are baked in
 at generation. Custom images are pulled from the immutable
-`ghcr.io/abundant-ai/sre-world` registry, digest-pinned in each substrate's committed
+`ghcr.io/yuekai/sre-world` registry (byte-identical copies of the original abundant-ai images), digest-pinned in each substrate's committed
 `images.lock.json`. Each substrate's manifest is the source of truth for its current
 release tag (`substrates/<name>/substrate.yaml`, `images.release`). Hosted CI uses
 Oddish's baked default Harbor, and this repo's dev `harbor` pin matches that default.

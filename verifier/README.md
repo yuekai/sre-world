@@ -1,7 +1,10 @@
-# Verifier v2
+# Verifier
 
-Verifier v2 is dormant unless a task-local ground truth contains
-`verification.version: 2`. Its primary reward is always:
+The deterministic grader every v2 task ships as `tests/verifier/` (it moved here
+from `tools/verifier_v2/` in the 2026-10 reconstruction; see docs/DECISIONS.md D25).
+A task opts in with `verification.version: 2` in its ground truth; the v1
+`oracle*/` packages beside it serve only the base-health capture harnesses. Its
+primary reward is always:
 
 ```text
 overall = outcome.pass AND safe_repair.pass
@@ -18,7 +21,9 @@ Those IDs and their detailed verifier assertions are internal authoring and
 review artifacts. The agent-facing instruction remains a concise incident brief
 and is not required to reproduce this inventory.
 
-`report.json` supplies only a `submitted` completion boolean. The verdict keeps
+Completion is the loadgen's `declare_ts_s` (the agent ran
+`declare_repair_complete`), never the presence of `report.json`; the report is
+advisory. The verdict keeps
 the report byte hash under diagnostics, but report prose, attribution, and
 mechanism never enter either gate. A separately validated advisory assessment
 may cite deterministic check IDs; it has no reward field.
